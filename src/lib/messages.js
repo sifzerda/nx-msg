@@ -15,58 +15,22 @@ export async function startChat(contactId) {
 }
 
 export async function getConversations() {
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user) {
-    throw new Error("Not authenticated");
-  }
-
-  const { data, error } = await supabase
-    .from("conversation_members")
-    .select(`
-      conversation_id,
-      conversations!inner (
-        id,
-        created_at,
-        type,
-        conversation_members (
-          user_id,
-          profiles (
-            id,
-            username,
-            display_name,
-            avatar_url
-          )
-        )
-      )
-    `)
-    .eq("user_id", user.id)
-    .order("joined_at", { ascending: false });
+  const { data, error } = await supabase.rpc(
+    "get_chat_summaries"
+  );
 
   if (error) throw error;
 
-  // Deduplicate conversations by ID.
-  const unique = new Map();
+  return data ?? [];
+}
 
-  for (const row of data ?? []) {
-    const chat = row.conversations;
+export async function markChatRead(conversationId) {
+  const { error } = await supabase.rpc(
+    "mark_chat_read",
+    { chat_id: conversationId }
+  );
 
-    if (!chat || unique.has(chat.id)) continue;
-
-    unique.set(chat.id, {
-      id: chat.id,
-      created_at: chat.created_at,
-      type: chat.type,
-      members: (chat.conversation_members ?? [])
-        .map((member) => member.profiles)
-        .filter(Boolean),
-    });
-  }
-
-  return [...unique.values()];
+  if (error) throw error;
 }
 
 export async function getMessages(conversationId) {

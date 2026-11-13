@@ -3,107 +3,141 @@
 import { create } from "zustand";
 
 import {
-    getConversations,
-    getMessages,
-    sendMessage,
+  getConversations,
+  getMessages,
+  sendMessage,
+  markChatRead,
 } from "@/lib/messages";
 
+let chatRequestId = 0;
+
+const mergeMessages = (existing, incoming) => {
+  const unique = new Map();
+
+  for (const message of [...existing, ...incoming]) {
+    unique.set(message.id, message);
+  }
+
+  return [...unique.values()].sort(
+    (a, b) =>
+      new Date(a.created_at) - new Date(b.created_at) ||
+      a.id.localeCompare(b.id)
+  );
+};
+
 const useChatStore = create((set, get) => ({
-    conversations: [],
-    messages: [],
-    activeChatId: null,
-    loading: false,
-    sending: false,
-    error: null,
+  conversations: [],
+  messages: [],
+  activeChatId: null,
+  loading: false,
+  sending: false,
+  error: null,
 
-    fetchConversations: async () => {
-        try {
-            const conversations = await getConversations();
-            set({ conversations, error: null });
-        } catch (error) {
-            set({ error: error.message });
-        }
-    },
+  fetchConversations: async () => {
+    try {
+      const conversations = await getConversations();
+      set({ conversations, error: null });
+    } catch (error) {
+      set({ error: error.message });
+    }
+  },
 
-    openChat: async (chatId) => {
-        set({
-            activeChatId: chatId,
-            messages: [],
-            loading: true,
-            error: null,
-        });
+  openChat: async (chatId) => {
+    const requestId = ++chatRequestId;
 
-        try {
-            const messages = await getMessages(chatId);
+    set({
+      activeChatId: chatId,
+      messages: [],
+      loading: true,
+      error: null,
+    });
 
-            if (get().activeChatId === chatId) {
+    try {
+      const messages = await getMessages(chatId);
 
-                set((state) => {
-                    const combined = [...messages, ...state.messages];
+      if (
+        requestId !== chatRequestId ||
+        get().activeChatId !== chatId
+      ) {
+        return;
+      }
 
-                    const unique = Array.from(new Map(combined.map((message) => [message.id, message])).values());
-                    unique.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      set((state) => ({
+        messages: mergeMessages(state.messages, messages),
+      }));
 
-                    return { messages: unique };
-                });
+      await markChatRead(chatId);
+      await get().fetchConversations();
+    } catch (error) {
+      if (requestId === chatRequestId) {
+        set({ error: error.message });
+      }
+    } finally {
+      if (requestId === chatRequestId) {
+        set({ loading: false });
+      }
+    }
+  },
 
-            }
-        } catch (error) {
-            if (get().activeChatId === chatId) {
-                set({ error: error.message });
-            }
-        } finally {
-            if (get().activeChatId === chatId) {
-                set({ loading: false });
-            }
-        }
-    },
+  receiveMessage: (message) => {
+    if (message.conversation_id !== get().activeChatId) {
+      return;
+    }
 
-    receiveMessage: (message) => {
-        if (message.conversation_id !== get().activeChatId) {
-            return;
-        }
+    set((state) => ({
+      messages: mergeMessages(
+        state.messages,
+        [message]
+      ),
+    }));
+  },
 
-        set((state) => {
-            if (state.messages.some((m) => m.id === message.id)) {
-                return state;
-            }
+  markRead: async (chatId) => {
+    try {
+      await markChatRead(chatId);
+      await get().fetchConversations();
+    } catch (error) {
+      set({ error: error.message });
+    }
+  },
 
-            return {
-                messages: [...state.messages, message].sort(
-                    (a, b) =>
-                        new Date(a.created_at) - new Date(b.created_at)
-                ),
-            };
-        });
-    },
+  send: async (content) => {
+    const chatId = get().activeChatId;
 
-    send: async (content) => {
-        const chatId = get().activeChatId;
-        if (!chatId || get().sending) return false;
+    if (!chatId || get().sending) return false;
 
-        set({ sending: true, error: null });
+    set({ sending: true, error: null });
 
-        try {
-            const message = await sendMessage(chatId, content);
-            get().receiveMessage(message);
-            return true;
-        } catch (error) {
-            set({ error: error.message });
-            return false;
-        } finally {
-            set({ sending: false });
-        }
-    },
+    try {
+      const message = await sendMessage(chatId, content);
 
-    reset: () => set({
-        conversations: [],
-        messages: [],
-        activeChatId: null,
-        loading: false,
-        sending: false,
-        error: null,
-    }),
+      if (get().activeChatId === chatId) {
+        get().receiveMessage(message);
+      }
+
+      await get().fetchConversations();
+
+      return true;
+    } catch (error) {
+      set({ error: error.message });
+      return false;
+    } finally {
+      set({ sending: false });
+    }
+  },
+
+  reset: () => {
+    ++chatRequestId;
+
+    set({
+      conversations: [],
+      messages: [],
+      activeChatId: null,
+      loading: false,
+      sending: false,
+      error: null,
+    });
+  },
 }));
 
 export default useChatStore;

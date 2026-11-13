@@ -18,16 +18,46 @@ export default function ChatWindow({ conversationId, userId }) {
   const error = useChatStore((s) => s.error);
   const openChat = useChatStore((s) => s.openChat);
   const receiveMessage = useChatStore((s) => s.receiveMessage);
+  const markRead = useChatStore((s) => s.markRead);
 
   useEffect(() => {
-    // Subscribe before loading history to reduce
-    // the chance of missing new messages.
-    const unsubscribe = subscribeToMessages(conversationId, receiveMessage);
+    const unsubscribe = subscribeToMessages(
+      conversationId,
+      (message) => {
+        receiveMessage(message);
+
+        if (
+          message.sender_id !== userId && document.visibilityState === "visible"
+        ) {
+          markRead(conversationId);
+        }
+      }
+    );
 
     openChat(conversationId);
 
     return () => unsubscribe();
-  }, [conversationId, openChat, receiveMessage]);
+  }, [
+    conversationId,
+    userId,
+    openChat,
+    receiveMessage,
+    markRead,
+  ]);
+
+  useEffect(() => {
+    function handleVisibility() {
+      if (document.visibilityState === "visible") {
+        markRead(conversationId);
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [conversationId, markRead]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({

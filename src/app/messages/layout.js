@@ -3,10 +3,11 @@
 
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import ChatList from "@/components/ChatList";
-import LogoutButton from "@/components/LogoutButton";
+import MessengerLayout from "@/components/MessengerLayout";
 
-export default async function MessagesLayout({ children }) {
+export default async function MessagesLayout({
+  children,
+}) {
   const supabase = await createClient();
 
   const {
@@ -19,21 +20,8 @@ export default async function MessagesLayout({ children }) {
   }
 
   return (
-    <main className="flex h-dvh overflow-hidden bg-gray-950 text-white">
-      <div className="flex w-72 shrink-0 flex-col border-r border-gray-800">
-        <div className="min-h-0 flex-1">
-          <ChatList userId={user.id} />
-        </div>
-
-        <div className="border-t border-gray-800 bg-gray-900 p-4">
-          <LogoutButton />
-        </div>
-      </div>
-
-      <section className="min-w-0 flex-1">
-        {children}
-      </section>
-    </main>
+    <MessengerLayout userId={user.id}>
+      {children}
+    </MessengerLayout>
   );
 }
-
