@@ -95,3 +95,14 @@ export function subscribeToMessages(conversationId, onMessage) {
     supabase.removeChannel(channel);
   };
 }
+
+export async function getRecipientReadAt(conversationId) {
+  const { data, error } = await supabase.rpc(
+    "get_recipient_read_at",
+    { chat_id: conversationId }
+  );
+
+  if (error) throw error;
+
+  return data;
+}
