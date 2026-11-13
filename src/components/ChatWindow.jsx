@@ -8,14 +8,10 @@ import { subscribeToMessages, getRecipientReadAt } from "@/lib/messages";
 import MessageBubble from "./MessageBubble";
 import MessageInput from "./MessageInput";
 
-export default function ChatWindow({
-  conversationId,
-  userId,
-}) {
+export default function ChatWindow({ conversationId, userId }) {
+  
   const bottomRef = useRef(null);
-
-  const [recipientReadAt, setRecipientReadAt] =
-    useState(null);
+  const [recipientReadAt, setRecipientReadAt] = useState(null);
 
   const messages = useChatStore((s) => s.messages);
   const loading = useChatStore((s) => s.loading);
@@ -26,11 +22,7 @@ export default function ChatWindow({
 
   // Load the conversation and subscribe to messages
   useEffect(() => {
-    const unsubscribe = subscribeToMessages(
-      conversationId,
-      (message) => {
-        receiveMessage(message);
-
+    const unsubscribe = subscribeToMessages(conversationId, (message) => { receiveMessage(message);
         if (message.sender_id !== userId && document.visibilityState === "visible") {
           markRead(conversationId);
         }
@@ -67,7 +59,6 @@ export default function ChatWindow({
     refreshReadStatus();
 
     const interval = setInterval(refreshReadStatus, 5000);
-
     document.addEventListener("visibilitychange", refreshReadStatus);
 
     return () => {
