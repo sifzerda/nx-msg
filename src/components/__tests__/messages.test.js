@@ -3,11 +3,7 @@
 // check message validation, supabase calls, 
 // conversation ordering and group creation
 
-import {
-    sendMessage,
-    createGroupChat,
-    getConversations,
-} from "@/lib/messages";
+import { sendMessage, createGroupChat, getConversations } from "@/lib/messages";
 
 const mockRpc = jest.fn();
 const mockInsert = jest.fn();
