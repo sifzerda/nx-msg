@@ -24,11 +24,7 @@ export default function PushNotificationButton() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const isSupported =
-      "serviceWorker" in navigator &&
-      "PushManager" in window &&
-      "Notification" in window;
-
+    const isSupported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
     setSupported(isSupported);
 
     if (!isSupported) return;
