@@ -1,4 +1,4 @@
-// src/components/messages/MessengerLayout.jsx
+// src/components/MessengerLayout.jsx
 
 "use client";
 

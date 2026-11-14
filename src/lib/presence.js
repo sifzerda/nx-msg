@@ -4,29 +4,13 @@ import { createClient } from "@/lib/supabase/client";
 
 const supabase = createClient();
 
-export function subscribeToPresence(
-  userId,
-  onChange
-) {
-  const channel = supabase.channel(
-    "messenger-presence",
-    {
-      config: {
-        presence: {
-          key: userId,
-        },
-      },
-    }
-  );
+export function subscribeToPresence(userId, onChange) {
+  const channel = supabase.channel("messenger-presence", { config: { presence: { key: userId, } } });
 
   function updatePresence() {
     const state = channel.presenceState();
 
-    onChange(
-      Object.keys(state).filter(
-        (id) => state[id]?.length > 0
-      )
-    );
+    onChange(Object.keys(state).filter((id) => state[id]?.length > 0));
   }
 
   channel

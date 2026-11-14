@@ -1,4 +1,4 @@
-// src/components/messages/MessengerRealtime.jsx
+// src/components/MessengerRealtime.jsx
 
 "use client";
 

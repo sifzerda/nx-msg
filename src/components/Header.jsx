@@ -12,7 +12,10 @@ import {
   UserPlus,
 } from "lucide-react";
 
+import PushNotificationButton from "@/components/PushNotificationButton";
+import { clearMessageProfileCache } from "@/lib/messageProfiles";
 import { createClient } from "@/lib/supabase/client";
+
 import useChatStore from "@/store/useChatStore";
 import useContactStore from "@/store/useContactStore";
 import usePresenceStore from "@/store/usePresenceStore";
@@ -50,25 +53,62 @@ export default function Header({ user = null }) {
   const router = useRouter();
 
   const isAuthenticated = Boolean(user);
-
   const links = isAuthenticated
     ? authenticatedLinks
     : guestLinks;
 
   async function handleLogout() {
-    const { error } = await supabase.auth.signOut();
+    try {
+      // Remove this browser's push subscription
+      // before ending the authenticated session.
+      if ("serviceWorker" in navigator) {
+        const registration =
+          await navigator.serviceWorker.getRegistration("/");
 
-    if (error) {
-      console.error("Logout failed:", error.message);
-      return;
+        const subscription =
+          await registration?.pushManager?.getSubscription();
+
+        if (subscription) {
+          const response = await fetch(
+            "/api/push/unsubscribe",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                endpoint: subscription.endpoint,
+              }),
+            }
+          );
+
+          if (!response.ok) {
+            throw new Error(
+              "Could not remove push subscription"
+            );
+          }
+
+          await subscription.unsubscribe();
+        }
+      }
+
+      // Sign out from Supabase.
+      const { error } = await supabase.auth.signOut();
+
+      if (error) throw error;
+
+      // Clear client-side application state.
+      useChatStore.getState().reset();
+      useContactStore.getState().reset();
+      usePresenceStore.getState().reset();
+
+      clearMessageProfileCache();
+
+      router.replace("/login");
+      router.refresh();
+    } catch (error) {
+      console.error("Logout failed:", error);
     }
-
-    useChatStore.getState().reset();
-    useContactStore.getState().reset();
-    usePresenceStore.getState().reset();
-
-    router.replace("/login");
-    router.refresh();
   }
 
   return (
@@ -116,9 +156,10 @@ export default function Header({ user = null }) {
         })}
       </nav>
 
-      {/* User and Logout */}
+      {/* Authenticated user */}
       {isAuthenticated && (
         <div className="flex min-w-0 items-center gap-3">
+          {/* User information */}
           <div className="hidden min-w-0 text-right sm:block">
             <p className="max-w-40 truncate text-sm font-medium text-white">
               {user.display_name || "User"}
@@ -129,6 +170,10 @@ export default function Header({ user = null }) {
             </p>
           </div>
 
+          {/* Web Push notifications */}
+          <PushNotificationButton />
+
+          {/* Logout */}
           <button
             type="button"
             onClick={handleLogout}

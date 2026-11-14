@@ -1,4 +1,4 @@
-// src/components/messages/MessageInput.jsx
+// src/components/MessageInput.jsx
 
 "use client";
 

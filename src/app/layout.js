@@ -35,7 +35,7 @@ export default async function RootLayout({ children }) {
   if (user) {
     const { data } = await supabase
       .from("profiles")
-      .select("username, display_name")
+      .select("id, username, display_name")
       .eq("id", user.id)
       .maybeSingle();
 
@@ -48,7 +48,15 @@ export default async function RootLayout({ children }) {
       className={`${geistSans.variable} ${geistMono.variable}`}
     >
       <body className="flex h-dvh flex-col bg-gray-950 text-white">
-        <Header user={user ? profile ?? { display_name: "User", username: "" } : null} />
+       
+        <Header user={user ? {
+          id: user.id,
+          username: profile?.username ?? "",
+          display_name: profile?.display_name ?? "User",
+        }
+          : null
+        }
+        />
 
         <main className="min-h-0 flex-1 overflow-hidden">
           {children}
