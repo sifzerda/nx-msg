@@ -4,11 +4,7 @@ self.addEventListener("push", (event) => {
   if (!event.data) return;
 
   const data = event.data.json();
-
-  const path = typeof data.url === "string" &&
-    /^\/messages\/[0-9a-f-]{36}$/i.test(data.url)
-      ? data.url
-      : "/messages";
+  const path = typeof data.url === "string" && /^\/messages\/[0-9a-f-]{36}$/i.test(data.url) ? data.url : "/messages";
 
   event.waitUntil(
     self.registration.showNotification(
@@ -26,10 +22,7 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
 
-  const url = new URL(
-    event.notification.data?.url || "/messages",
-    self.location.origin
-  );
+  const url = new URL(event.notification.data?.url || "/messages", self.location.origin);
 
   event.waitUntil(
     (async () => {
