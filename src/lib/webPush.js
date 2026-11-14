@@ -1,7 +1,7 @@
 // src/lib/webPush.js
 
 import "server-only";
-import webpush from "web-push";
+import * as webpush from "web-push";
 
 webpush.setVapidDetails(
   process.env.VAPID_SUBJECT,
