@@ -48,6 +48,7 @@ npm install
 - [Vercel](https://vercel.com/)
 - [Web Push](https://web-push.com/)
 - [Service Worker](https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API)
+- [Jest](https://jestjs.io/)
 
 ## Support
 
