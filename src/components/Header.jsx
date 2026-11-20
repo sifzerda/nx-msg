@@ -4,23 +4,9 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import {
-  MessageCircle,
-  Users,
-  LogOut,
-  LogIn,
-  UserPlus,
-} from "lucide-react";
-
+import { MessageCircle, Users, LogOut, LogIn, UserPlus } from "lucide-react";
 import PushNotificationButton from "@/components/PushNotificationButton";
-import { clearMessageProfileCache } from "@/lib/messageProfiles";
-import { createClient } from "@/lib/supabase/client";
-
-import useChatStore from "@/store/useChatStore";
-import useContactStore from "@/store/useContactStore";
-import usePresenceStore from "@/store/usePresenceStore";
-
-const supabase = createClient();
+import { logout } from "../lib/logout";
 
 const authenticatedLinks = [
   {
@@ -59,55 +45,20 @@ export default function Header({ user = null }) {
 
   async function handleLogout() {
     try {
-      // Remove this browser's push subscription
-      // before ending the authenticated session.
-      if ("serviceWorker" in navigator) {
-        const registration =
-          await navigator.serviceWorker.getRegistration("/");
+      const result = await logout();
 
-        const subscription =
-          await registration?.pushManager?.getSubscription();
-
-        if (subscription) {
-          const response = await fetch(
-            "/api/push/unsubscribe",
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                endpoint: subscription.endpoint,
-              }),
-            }
-          );
-
-          if (!response.ok) {
-            throw new Error(
-              "Could not remove push subscription"
-            );
-          }
-
-          await subscription.unsubscribe();
-        }
+      if (result.pushCleanupError) {
+        console.warn(
+          "Logout completed, but push cleanup had an error:",
+          result.pushCleanupError
+        );
       }
-
-      // Sign out from Supabase.
-      const { error } = await supabase.auth.signOut();
-
-      if (error) throw error;
-
-      // Clear client-side application state.
-      useChatStore.getState().reset();
-      useContactStore.getState().reset();
-      usePresenceStore.getState().reset();
-
-      clearMessageProfileCache();
 
       router.replace("/login");
       router.refresh();
     } catch (error) {
       console.error("Logout failed:", error);
+      alert(error.message || "Could not log out");
     }
   }
 
@@ -140,11 +91,10 @@ export default function Header({ user = null }) {
               key={href}
               href={href}
               title={label}
-              className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition ${
-                active
-                  ? "bg-blue-600 text-white"
-                  : "text-gray-400 hover:bg-gray-800 hover:text-white"
-              }`}
+              className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition ${active
+                ? "bg-blue-600 text-white"
+                : "text-gray-400 hover:bg-gray-800 hover:text-white"
+                }`}
             >
               <Icon size={18} />
 

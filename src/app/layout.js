@@ -47,7 +47,7 @@ export default async function RootLayout({ children }) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable}`}
     >
-      <body className="flex h-dvh flex-col bg-gray-950 text-white">
+      <body className="flex h-dvh flex-col overflow-hidden bg-gray-950 text-white">
        
         <Header user={user ? {
           id: user.id,

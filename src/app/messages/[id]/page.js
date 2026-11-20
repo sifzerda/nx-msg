@@ -29,9 +29,11 @@ export default async function ConversationPage({ params }) {
   }
 
   return (
-    <ChatWindow
-      conversationId={conversation.id}
-      userId={user.id}
-    />
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+      <ChatWindow
+        conversationId={conversation.id}
+        userId={user.id}
+      />
+    </div>
   );
 }
