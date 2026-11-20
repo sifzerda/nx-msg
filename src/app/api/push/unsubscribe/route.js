@@ -23,9 +23,10 @@ export async function POST(request) {
       return respond("Unauthorized", 401);
     }
 
-    const origin = request.headers.get("origin");
-
-    if (origin !== new URL(request.url).origin) {
+    if (
+      request.headers.get("origin") !==
+      new URL(request.url).origin
+    ) {
       return respond("Invalid origin", 403);
     }
 
@@ -38,6 +39,8 @@ export async function POST(request) {
     }
 
     const endpoint = body?.endpoint;
+    const rememberPreference =
+      body?.rememberPreference === true;
 
     if (
       typeof endpoint !== "string" ||
@@ -49,21 +52,38 @@ export async function POST(request) {
 
     const admin = createAdminClient();
 
-    const { error } = await admin
+    // An explicit disable must persist across logins.
+    // Do this before deleting the subscription so
+    // notification delivery is disabled immediately.
+    if (rememberPreference) {
+      const { error: preferenceError } = await admin
+        .from("profiles")
+        .update({ notifications_enabled: false })
+        .eq("id", user.id);
+
+      if (preferenceError) {
+        console.error(
+          "[Push] Preference update failed:",
+          preferenceError
+        );
+
+        return respond(
+          "Could not save notification preference",
+          500
+        );
+      }
+    }
+
+    const { error: deleteError } = await admin
       .from("push_subscriptions")
       .delete()
       .eq("user_id", user.id)
       .eq("endpoint", endpoint);
 
-    if (error) {
+    if (deleteError) {
       console.error(
-        "[Push] Unsubscribe database error:",
-        {
-          code: error.code,
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-        }
+        "[Push] Unsubscribe failed:",
+        deleteError
       );
 
       return respond(
@@ -86,11 +106,4 @@ export async function POST(request) {
       500
     );
   }
-}
-
-export async function GET() {
-  return NextResponse.json({
-    success: true,
-    message: "Push unsubscribe route is working",
-  });
 }

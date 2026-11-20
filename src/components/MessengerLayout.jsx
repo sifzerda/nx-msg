@@ -18,23 +18,26 @@ export default function MessengerLayout({
   const inConversation = pathname.startsWith("/messages/");
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-gray-950 text-white">
+    <div className="flex h-full min-h-0 min-w-0 overflow-hidden bg-gray-950 text-white">
       <MessengerRealtime userId={userId} />
 
-      <div
-        className={`w-full shrink-0 border-r border-gray-800 md:w-80 ${
+      {/* Conversation sidebar */}
+      <aside
+        className={`min-h-0 w-full shrink-0 overflow-hidden border-r border-gray-800 md:w-80 ${
           inConversation ? "hidden md:block" : "block"
         }`}
       >
         <ChatList />
-      </div>
+      </aside>
 
+      {/* Main conversation area */}
       <main
-        className={`min-w-0 flex-1 ${
+        className={`min-h-0 min-w-0 flex-1 overflow-hidden ${
           inConversation ? "block" : "hidden md:block"
         }`}
       >
-        <div className="flex h-full min-h-0 flex-col">
+        <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+          {/* Mobile back navigation */}
           {inConversation && (
             <Link
               href="/messages"
@@ -45,7 +48,8 @@ export default function MessengerLayout({
             </Link>
           )}
 
-          <div className="min-h-0 flex-1">
+          {/* Conversation content */}
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
             {children}
           </div>
         </div>

@@ -27,10 +27,7 @@ export default function ChatWindow({ conversationId, userId }) {
   const openChat = useChatStore((s) => s.openChat);
   const receiveMessage = useChatStore((s) => s.receiveMessage);
   const markRead = useChatStore((s) => s.markRead);
-
-  const chat = conversations.find(
-    (c) => c.id === conversationId
-  );
+  const chat = conversations.find((c) => c.id === conversationId);
 
   const isGroup = chat?.type === "group";
 
@@ -168,10 +165,7 @@ export default function ChatWindow({ conversationId, userId }) {
       }
     }
 
-    document.addEventListener(
-      "visibilitychange",
-      handleVisibility
-    );
+    document.addEventListener("visibilitychange", handleVisibility);
 
     return () => {
       document.removeEventListener(
@@ -209,15 +203,9 @@ export default function ChatWindow({ conversationId, userId }) {
         type: chat?.type,
       });
     } catch (error) {
-      console.error(
-        "Failed to export chat:",
-        error
-      );
+      console.error("Failed to export chat:", error);
 
-      setExportError(
-        error.message ||
-        "Unable to download chat log."
-      );
+      setExportError(error.message || "Unable to download chat log.");
     } finally {
       setExporting(false);
     }
@@ -239,59 +227,59 @@ export default function ChatWindow({ conversationId, userId }) {
   }
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-gray-950">
-      {/* Header */}
-      <header className="flex items-center gap-3 border-b border-gray-800 p-5">
-        {isGroup && (
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-600/20 text-blue-400">
-            <UsersRound size={22} />
+    <div className="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-gray-950">
+      {/* Conversation header */}
+      <div className="min-w-0">
+        <header className="flex items-center gap-3 border-b border-gray-800 p-4">
+          {isGroup && (
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-600/20 text-blue-400">
+              <UsersRound size={22} />
+            </div>
+          )}
+
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-lg font-semibold text-white">
+              {chatName}
+            </h2>
+
+            {isGroup && (
+              <p className="text-xs text-gray-400">
+                {chat?.member_count ?? 0} members
+              </p>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={handleExportChat}
+            disabled={!conversationId || exporting}
+            title="Download complete chat history"
+            aria-label="Download chat log"
+            className="flex shrink-0 items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm font-medium text-gray-200 transition-colors hover:border-blue-500 hover:bg-gray-800 hover:text-white disabled:opacity-50"
+          >
+            <Download size={17} />
+
+            <span className="hidden sm:inline">
+              {exporting ? "Exporting..." : "Download chat"}
+            </span>
+          </button>
+        </header>
+
+        {exportError && (
+          <div
+            role="alert"
+            className="border-b border-red-900/40 bg-red-950/30 px-4 py-2 text-sm text-red-400"
+          >
+            {exportError}
           </div>
         )}
+      </div>
 
-        {/* Conversation information */}
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate text-lg font-semibold text-white">
-            {chatName}
-          </h2>
-
-          {isGroup && (
-            <p className="text-xs text-gray-400">
-              {chat?.member_count ?? 0} members
-            </p>
-          )}
-        </div>
-
-        {/* Download chat log */}
-        <button
-          type="button"
-          onClick={handleExportChat}
-          disabled={!conversationId || exporting}
-          title="Download complete chat history"
-          aria-label="Download chat log"
-          className="flex shrink-0 items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm font-medium text-gray-200 transition-colors hover:border-blue-500 hover:bg-gray-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <Download size={17} />
-
-          <span className="hidden sm:inline">
-            {exporting
-              ? "Exporting..."
-              : "Download chat"}
-          </span>
-        </button>
-      </header>
-
-      {/* Export error */}
-      {exportError && (
-        <div
-          role="alert"
-          className="border-b border-red-900/40 bg-red-950/30 px-5 py-3 text-sm text-red-400"
-        >
-          {exportError}
-        </div>
-      )}
-
-      {/* Messages */}
-      <div ref={messagesContainerRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-5">
+      {/* Scrollable messages */}
+      <div
+        ref={messagesContainerRef}
+        className="min-h-0 min-w-0 overflow-y-auto overscroll-contain p-4"
+      >
         {loading && (
           <p className="text-gray-400">
             Loading messages...
@@ -305,11 +293,8 @@ export default function ChatWindow({ conversationId, userId }) {
         )}
 
         {messages.map((message) => {
-          const isOwn =
-            message.sender_id === userId;
-
-          const sender =
-            profiles[message.sender_id];
+          const isOwn = message.sender_id === userId;
+          const sender = profiles[message.sender_id];
 
           return (
             <div key={message.id}>
@@ -330,23 +315,20 @@ export default function ChatWindow({ conversationId, userId }) {
             </div>
           );
         })}
-
       </div>
 
-      {/* Messaging errors */}
-      {error && (
-        <p
-          role="alert"
-          className="px-4 py-2 text-sm text-red-400"
-        >
-          {error}
-        </p>
-      )}
-
       {/* Message composer */}
-      <div className="shrink-0 border-t border-gray-800">
+      <div className="min-w-0 border-t border-gray-800 bg-gray-950">
+        {error && (
+          <p role="alert" className="px-4 py-2 text-sm text-red-400">
+            {error}
+          </p>
+        )}
+
         <MessageInput />
       </div>
     </div>
   );
+
+
 }

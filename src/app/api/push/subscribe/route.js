@@ -6,6 +6,10 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
+function fail(message, status) {
+  return NextResponse.json({ error: message }, { status });
+}
+
 export async function POST(request) {
   try {
     const supabase = await createClient();
@@ -16,60 +20,94 @@ export async function POST(request) {
     } = await supabase.auth.getUser();
 
     if (authError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+      return fail("Unauthorized", 401);
     }
 
-    const origin = request.headers.get("origin");
-
-    if (origin !== new URL(request.url).origin) {
-      return NextResponse.json(
-        { error: "Invalid origin" },
-        { status: 403 }
-      );
+    if (
+      request.headers.get("origin") !==
+      new URL(request.url).origin
+    ) {
+      return fail("Invalid origin", 403);
     }
 
-    const subscription = await request.json();
+    const body = await request.json();
+
+    const subscription = body.subscription ?? body;
+    const rememberPreference =
+      body.rememberPreference === true;
 
     const endpoint = subscription?.endpoint;
     const p256dh = subscription?.keys?.p256dh;
     const auth = subscription?.keys?.auth;
 
-    let endpointUrl;
+    if (
+      typeof endpoint !== "string" ||
+      !endpoint ||
+      endpoint.length > 4096 ||
+      typeof p256dh !== "string" ||
+      !p256dh ||
+      p256dh.length > 256 ||
+      typeof auth !== "string" ||
+      !auth ||
+      auth.length > 256
+    ) {
+      return fail("Invalid subscription", 400);
+    }
+
+    let url;
 
     try {
-      endpointUrl = new URL(endpoint);
+      url = new URL(endpoint);
     } catch {
-      return NextResponse.json(
-        { error: "Invalid endpoint" },
-        { status: 400 }
-      );
+      return fail("Invalid endpoint", 400);
     }
 
     if (
-      endpointUrl.protocol !== "https:" ||
-      endpointUrl.username ||
-      endpointUrl.password ||
-      endpointUrl.port ||
-      !p256dh ||
-      !auth ||
-      typeof p256dh !== "string" ||
-      typeof auth !== "string" ||
-      p256dh.length > 256 ||
-      auth.length > 256 ||
-      endpoint.length > 4096
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      url.port
     ) {
-      return NextResponse.json(
-        { error: "Invalid subscription" },
-        { status: 400 }
-      );
+      return fail("Invalid endpoint", 400);
     }
 
     const admin = createAdminClient();
 
-    const { error } = await admin
+    // Automatic restoration is only allowed if
+    // the user previously enabled notifications.
+    if (!rememberPreference) {
+      const { data: profile, error } = await admin
+        .from("profiles")
+        .select("notifications_enabled")
+        .eq("id", user.id)
+        .single();
+
+      if (error) throw error;
+
+      if (!profile.notifications_enabled) {
+        return fail("Notifications are disabled", 403);
+      }
+    }
+
+    // Never silently transfer another user's
+    // push endpoint to the current account.
+    const { data: existing, error: lookupError } =
+      await admin
+        .from("push_subscriptions")
+        .select("user_id")
+        .eq("endpoint", endpoint)
+        .maybeSingle();
+
+    if (lookupError) throw lookupError;
+
+    if (existing && existing.user_id !== user.id) {
+      return fail(
+        "This push subscription belongs to another account",
+        409
+      );
+    }
+
+    const { error: subscriptionError } = await admin
       .from("push_subscriptions")
       .upsert(
         {
@@ -81,15 +119,31 @@ export async function POST(request) {
         { onConflict: "endpoint" }
       );
 
-    if (error) throw error;
+    if (subscriptionError) throw subscriptionError;
+
+    if (rememberPreference) {
+      const { error: preferenceError } = await admin
+        .from("profiles")
+        .update({ notifications_enabled: true })
+        .eq("id", user.id);
+
+      if (preferenceError) throw preferenceError;
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error("Push subscription failed:", error);
+    console.error("[Push] Subscription failed:", {
+      message: error?.message,
+      code: error?.code,
+      details: error?.details,
+      hint: error?.hint,
+    });
 
-    return NextResponse.json(
-      { error: "Could not save subscription" },
-      { status: 500 }
+    return fail(
+      process.env.NODE_ENV === "development"
+        ? error?.message || "Could not save subscription"
+        : "Could not save subscription",
+      500
     );
   }
 }
