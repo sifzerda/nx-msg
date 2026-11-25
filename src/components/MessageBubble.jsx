@@ -1,62 +1,144 @@
 // src/components/MessageBubble.jsx
 
-import { Check, CheckCheck } from "lucide-react";
+"use client";
 
-export default function MessageBubble({
+import { memo, useCallback, useMemo } from "react";
+import { Check, CheckCheck, Reply } from "lucide-react";
+import QuotedMessage from "./QuotedMessage";
+import ReactionPicker from "./ReactionPicker";
+import MessageReactions from "./MessageReactions";
+import ImageAttachment from "./ImageAttachment";
+
+const EMPTY_REACTIONS = [];
+const timeFormatter = new Intl.DateTimeFormat("en-AU", { hour: "numeric", minute: "2-digit" });
+
+function MessageBubble({
   message,
   isOwn,
-  isRead = false,
+  isRead,
   showReadStatus = true,
+  // Message replies
+  quotedMessage,
+  quotedSenderName,
+  onReply,
+  onJumpToMessage,
+  // Emoji reactions
+  reactions = EMPTY_REACTIONS,
+  userId,
+  onToggleReaction,
 }) {
-  const time = new Date(
-    message.created_at
-  ).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const time = timeFormatter.format(new Date(message.created_at));
+
+  const selectedEmojis = useMemo(() => {
+    return reactions
+      .filter((reaction) => reaction.user_id === userId)
+      .map((reaction) => reaction.emoji);
+  }, [reactions, userId]);
+
+  const handleReaction = useCallback((emoji) => { onToggleReaction?.(message.id, emoji) }, [message.id, onToggleReaction]);
 
   return (
-    <div
-      className={`flex ${isOwn ? "justify-end" : "justify-start"
-        }`}
+    <div className={`group flex min-w-0 items-center gap-1 sm:gap-2 ${isOwn ? "justify-end" : "justify-start"
+      }`}
     >
+      {/* Message actions */}
       <div
-        className={`max-w-[80%] rounded-2xl px-4 py-2 ${isOwn
-            ? "bg-blue-600 text-white"
-            : "bg-gray-800 text-gray-100"
+        className={`flex shrink-0 items-center transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 ${isOwn ? "order-first" : "order-last"
           }`}
       >
-        <p className="whitespace-pre-wrap wrap-break-word text-sm">
-          {message.content}
-        </p>
+        <ReactionPicker
+          isOwn={isOwn}
+          selectedEmojis={selectedEmojis}
+          onSelect={handleReaction}
+        />
 
-        <div className="mt-1 flex items-center justify-end gap-2">
-          <span className="text-xs opacity-60">
-            {time}
-          </span>
+        <button
+          type="button"
+          onClick={() => onReply?.(message)}
+          aria-label="Reply to message"
+          title="Reply to message"
+          className="rounded-full p-2 text-gray-500 transition-colors hover:bg-gray-800 hover:text-blue-400"
+        >
+          <Reply size={17} />
+        </button>
+      </div>
 
-          {isOwn && showReadStatus && (
-            <span
-              className={`flex items-center gap-1 text-xs ${isRead
-                  ? "text-blue-200"
-                  : "text-blue-100/70"
-                }`}
-            >
-              {isRead ? (
-                <>
-                  <CheckCheck size={14} />
-                  Read
-                </>
-              ) : (
-                <>
-                  <Check size={14} />
-                  Unread
-                </>
-              )}
-            </span>
+      {/* Message and reactions */}
+      <div className="min-w-0 max-w-[calc(100%-80px)] sm:max-w-[75%]">
+        <div
+          className={`min-w-0 rounded-2xl px-4 py-2.5 ${isOwn
+              ? "rounded-br-sm bg-blue-600 text-white"
+              : "rounded-bl-sm bg-gray-800 text-gray-100"
+            }`}
+        >
+          {/* Quoted reply */}
+          {message.reply_to_id && (
+            <QuotedMessage
+              message={quotedMessage}
+              senderName={quotedSenderName}
+              isOwn={isOwn}
+              onClick={() =>
+                onJumpToMessage?.(
+                  message.reply_to_id
+                )
+              }
+            />
           )}
+
+          {/* Message content */}
+          {message.attachment_type === "image" &&
+            message.attachment_path && (
+              <ImageAttachment
+                path={message.attachment_path}
+                name={message.attachment_name}
+                userId={userId}
+              />
+            )}
+
+          {message.content && (
+            <p className="whitespace-pre-wrap wrap-break-word text-sm">
+              {message.content}
+            </p>
+          )}
+
+          {/* Timestamp and read receipts */}
+          <div
+            className={`mt-1 flex items-center justify-end gap-1 text-[11px] ${isOwn
+                ? "text-blue-200"
+                : "text-gray-400"
+              }`}
+          >
+            <time dateTime={message.created_at}>
+              {time}
+            </time>
+
+            {isOwn && showReadStatus && (
+              isRead ? (
+                <CheckCheck
+                  size={15}
+                  className="text-cyan-300"
+                  aria-label="Read"
+                />
+              ) : (
+                <Check
+                  size={15}
+                  aria-label="Sent"
+                />
+              )
+            )}
+          </div>
         </div>
+
+        {/* Emoji reactions */}
+        <MessageReactions
+          reactions={reactions}
+          userId={userId}
+          isOwn={isOwn}
+          onToggle={handleReaction}
+        />
       </div>
     </div>
   );
 }
+
+export default memo(MessageBubble);

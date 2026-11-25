@@ -9,12 +9,8 @@ import { ArrowLeft } from "lucide-react";
 import ChatList from "./ChatList";
 import MessengerRealtime from "./MessengerRealtime";
 
-export default function MessengerLayout({
-  children,
-  userId,
-}) {
+export default function MessengerLayout({ children, userId }) {
   const pathname = usePathname();
-
   const inConversation = pathname.startsWith("/messages/");
 
   return (

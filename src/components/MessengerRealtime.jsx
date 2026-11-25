@@ -3,46 +3,107 @@
 "use client";
 
 import { useEffect } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { subscribeToAllMessages } from "@/lib/messages";
 import { subscribeToPresence } from "@/lib/presence";
 import useChatStore from "@/store/useChatStore";
 import usePresenceStore from "@/store/usePresenceStore";
 
-const supabase = createClient();
+const REFRESH_DELAY = 150;
 
 export default function MessengerRealtime({ userId }) {
-  const fetchConversations = useChatStore((s) => s.fetchConversations);
-  const setOnlineUsers = usePresenceStore((s) => s.setOnlineUsers);
-
   useEffect(() => {
-    const unsubscribePresence = subscribeToPresence(userId, setOnlineUsers);
+    if (!userId) return;
 
-    const channel = supabase
-      .channel(`message-list:${userId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "messages",
-        },
-        (payload) => {
-          const conversations = useChatStore.getState().conversations;
-          const belongsToUser = conversations.some((chat) => chat.id === payload.new.conversation_id);
+    let active = true;
+    let refreshTimer = null;
 
-          if (belongsToUser) {
-            fetchConversations();
+    function scheduleRefresh() {
+      if (!active || refreshTimer !== null) return;
+
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+
+        if (active) {
+          void useChatStore
+            .getState()
+            .fetchConversations();
+        }
+      }, REFRESH_DELAY);
+    }
+
+    function handleMessage(message) {
+      if (!active) return;
+
+      const store = useChatStore.getState();
+
+      const isActiveChat =
+        message.conversation_id === store.activeChatId;
+
+      if (isActiveChat) {
+        store.receiveMessage(message);
+      }
+
+      const shouldMarkRead =
+        isActiveChat &&
+        message.sender_id !== userId &&
+        document.visibilityState === "visible";
+
+      if (shouldMarkRead) {
+        void store.markRead(message.conversation_id);
+      } else {
+        scheduleRefresh();
+      }
+    }
+
+    const unsubscribePresence = subscribeToPresence(
+      userId,
+      (users) => {
+        if (active) {
+          usePresenceStore
+            .getState()
+            .setOnlineUsers(users);
+        }
+      }
+    );
+
+    const unsubscribeMessages = subscribeToAllMessages(
+      userId,
+      handleMessage,
+      (status) => {
+        if (!active) return;
+
+        if (status === "SUBSCRIBED") {
+          scheduleRefresh();
+
+          const store = useChatStore.getState();
+
+          if (store.activeChatId) {
+            void store.syncMessages();
           }
         }
-      )
-      .subscribe();
+
+        if (
+          status === "CHANNEL_ERROR" ||
+          status === "TIMED_OUT"
+        ) {
+          console.warn("Message subscription status:", status);
+        }
+      }
+    );
 
     return () => {
+      active = false;
+
+      if (refreshTimer !== null) {
+        clearTimeout(refreshTimer);
+      }
+
       unsubscribePresence();
-      supabase.removeChannel(channel);
+      unsubscribeMessages();
+
       usePresenceStore.getState().reset();
     };
-  }, [userId, fetchConversations, setOnlineUsers]);
+  }, [userId]);
 
   return null;
 }

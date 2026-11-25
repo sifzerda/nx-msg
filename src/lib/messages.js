@@ -3,37 +3,14 @@
 import { createClient } from "@/lib/supabase/client";
 
 const supabase = createClient();
+const MESSAGE_COLUMNS = "id, conversation_id, sender_id, content, created_at, reply_to_id, attachment_path, attachment_type, attachment_name";
+const MESSAGE_LIMIT = 100;
 
-// Private chats
 export async function startChat(contactId) {
   const { data, error } = await supabase.rpc(
     "start_private_chat",
-    { other_user_id: contactId }
-  );
-
-  if (error) throw error;
-
-  return data;
-}
-
-// Group chats
-export async function createGroupChat(name, memberIds) {
-  const groupName = name.trim();
-  const members = [...new Set(memberIds)];
-
-  if (!groupName || groupName.length > 100) {
-    throw new Error("Group name must contain 1–100 characters");
-  }
-
-  if (members.length < 2 || members.length > 49) {
-    throw new Error("Select between 2 and 49 contacts");
-  }
-
-  const { data, error } = await supabase.rpc(
-    "create_group_chat",
     {
-      group_name: groupName,
-      member_ids: members,
+      other_user_id: contactId,
     }
   );
 
@@ -42,92 +19,81 @@ export async function createGroupChat(name, memberIds) {
   return data;
 }
 
-// Conversation list: private + group
-export async function getConversations() {
-  const [privateResult, groupResult] = await Promise.all([
-    supabase.rpc("get_chat_summaries"),
-    supabase.rpc("get_group_summaries"),
-  ]);
+export async function createGroupChat(name, memberIds) {
+  const groupName = name.trim();
 
-  if (privateResult.error) throw privateResult.error;
-  if (groupResult.error) throw groupResult.error;
-
-  const conversations = [
-    ...(privateResult.data ?? []).filter(
-      (chat) => chat.type === "private"
-    ),
-    ...(groupResult.data ?? []).filter(
-      (chat) => chat.type === "group"
-    ),
+  const members = [
+    ...new Set(memberIds.filter(Boolean)),
   ];
 
-  // Prevent duplicate conversations.
-  const unique = [
-    ...new Map(
-      conversations.map((chat) => [chat.id, chat])
-    ).values(),
-  ];
+  if (!groupName || groupName.length > 100) {
+    throw new Error(
+      "Group name must contain 1–100 characters"
+    );
+  }
 
-  // Most recently active conversation first.
-  return unique.sort((a, b) => {
-    const aTime = a.last_message_at ?? a.created_at;
-    const bTime = b.last_message_at ?? b.created_at;
+  if (members.length < 2 || members.length > 49) {
+    throw new Error(
+      "Select between 2 and 49 contacts"
+    );
+  }
 
-    return new Date(bTime) - new Date(aTime);
-  });
-}
-
-// Group summaries
-export async function getGroupSummaries() {
-  const { data, error } = await supabase.rpc(
-    "get_group_summaries"
-  );
+  const { data, error } = await supabase.rpc("create_group_chat", { group_name: groupName, member_ids: members });
 
   if (error) throw error;
 
+  return data;
+}
+
+export async function getConversations() {
+  const { data, error } = await supabase.rpc("get_conversation_summaries");
+  if (error) throw error;
   return data ?? [];
 }
 
-// Messages
+export async function getGroupSummaries() {
+  const { data, error } = await supabase.rpc("get_group_summaries");
+  if (error) throw error;
+  return data ?? [];
+}
+
 export async function getMessages(conversationId) {
   const { data, error } = await supabase
     .from("messages")
-    .select("id, conversation_id, sender_id, content, created_at")
+    .select(MESSAGE_COLUMNS)
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: false })
-    .limit(100);
+    .order("id", { ascending: false })
+    .limit(MESSAGE_LIMIT);
 
   if (error) throw error;
 
   return (data ?? []).reverse();
 }
 
-export async function sendMessage(conversationId, content) {
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user) {
-    throw new Error("Not authenticated");
-  }
-
+export async function sendMessage(
+  conversationId,
+  content,
+  replyToId = null,
+  attachment = null
+) {
   const message = content.trim();
 
-  if (!message || message.length > 5000) {
-    throw new Error("Message must contain 1–5000 characters");
+  if (
+    message.length > 5000 ||
+    (!message && !attachment)
+  ) {
+    throw new Error("Invalid message content");
   }
 
   const { data, error } = await supabase
-    .from("messages")
-    .insert({
-      conversation_id: conversationId,
-      sender_id: user.id,
-      content: message,
+    .rpc("send_chat_message", {
+      chat_id: conversationId,
+      message_content: message,
+      reply_id: replyToId,
+      image_path: attachment?.path ?? null,
+      image_name: attachment?.name ?? null,
     })
-    .select(
-      "id, conversation_id, sender_id, content, created_at"
-    )
     .single();
 
   if (error) throw error;
@@ -135,29 +101,43 @@ export async function sendMessage(conversationId, content) {
   return data;
 }
 
-// Mark conversation as read
 export async function markChatRead(conversationId) {
-  const { error } = await supabase.rpc(
-    "mark_chat_read",
-    { chat_id: conversationId }
-  );
+  const { error } = await supabase.rpc("mark_chat_read", { chat_id: conversationId });
 
   if (error) throw error;
 }
 
-// Recipient read status (private chats)
 export async function getRecipientReadAt(conversationId) {
-  const { data, error } = await supabase.rpc(
-    "get_recipient_read_at",
-    { chat_id: conversationId }
-  );
+  const { data, error } = await supabase.rpc("get_recipient_read_at", { chat_id: conversationId });
 
   if (error) throw error;
 
   return data;
 }
 
-// Realtime messages
+// Global message subscription.
+export function subscribeToAllMessages(userId, onMessage, onStatus) {
+  const channel = supabase
+    .channel(`messages:${userId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "INSERT",
+        schema: "public",
+        table: "messages",
+      },
+      ({ new: message }) => {
+        onMessage(message);
+      }
+    )
+    .subscribe(onStatus);
+
+  return () => {
+    void supabase.removeChannel(channel);
+  };
+}
+
+// Retained for backwards compatibility.
 export function subscribeToMessages(conversationId, onMessage) {
   const channel = supabase
     .channel(`chat:${conversationId}`)
@@ -169,13 +149,56 @@ export function subscribeToMessages(conversationId, onMessage) {
         table: "messages",
         filter: `conversation_id=eq.${conversationId}`,
       },
-      (payload) => {
-        onMessage(payload.new);
+      ({ new: message }) => {
+        onMessage(message);
       }
     )
     .subscribe();
 
   return () => {
-    supabase.removeChannel(channel);
+    void supabase.removeChannel(channel);
   };
+}
+
+export function subscribeToReadReceipts(conversationId, onReceipt, onStatus) {
+  const channel = supabase
+    .channel(`read-receipts:${conversationId}:${crypto.randomUUID()}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "UPDATE",
+        schema: "public",
+        table: "conversation_members",
+        filter: `conversation_id=eq.${conversationId}`,
+      },
+      ({ new: member }) => {
+        onReceipt(member);
+      }
+    )
+    .subscribe(onStatus);
+
+  return () => {
+    void supabase.removeChannel(channel);
+  };
+}
+
+export async function getMessagesByIds(
+  conversationId,
+  messageIds
+) {
+  const ids = [...new Set(messageIds)].filter(Boolean);
+
+  if (!conversationId || !ids.length) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("messages")
+    .select(MESSAGE_COLUMNS)
+    .eq("conversation_id", conversationId)
+    .in("id", ids);
+
+  if (error) throw error;
+
+  return data ?? [];
 }

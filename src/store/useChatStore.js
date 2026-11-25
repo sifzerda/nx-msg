@@ -1,7 +1,7 @@
 // src/store/useChatStore.js
 
 import { create } from "zustand";
-
+import { uploadImage } from "@/lib/attachments";
 import {
   getConversations,
   getMessages,
@@ -9,135 +9,471 @@ import {
   markChatRead,
 } from "@/lib/messages";
 
+let generation = 0;
 let chatRequestId = 0;
+let conversationRequest = null;
+let refreshPending = false;
 
-const mergeMessages = (existing, incoming) => {
-  const unique = new Map();
+const readRequests = new Map();
 
-  for (const message of [...existing, ...incoming]) {
-    unique.set(message.id, message);
-  }
-
-  return [...unique.values()].sort(
-    (a, b) =>
-      new Date(a.created_at) - new Date(b.created_at) ||
-      a.id.localeCompare(b.id)
-  );
-};
-
-const useChatStore = create((set, get) => ({
+const INITIAL_STATE = {
   conversations: [],
   messages: [],
   activeChatId: null,
   loading: false,
   sending: false,
   error: null,
+  replyTo: null,
+};
 
-  fetchConversations: async () => {
-    try {
-      const conversations = await getConversations();
-      set({ conversations, error: null });
-    } catch (error) {
-      set({ error: error.message });
+function compareMessages(a, b) {
+  return (
+    Date.parse(a.created_at) -
+    Date.parse(b.created_at) ||
+    a.id.localeCompare(b.id)
+  );
+}
+
+function mergeMessages(existing, incoming) {
+  const unique = new Map();
+
+  for (const message of incoming) {
+    unique.set(message.id, message);
+  }
+
+  // Preserve newer Realtime data.
+  for (const message of existing) {
+    unique.set(message.id, message);
+  }
+
+  return [...unique.values()].sort(compareMessages);
+}
+
+function insertMessage(messages, message) {
+  if (messages.some((item) => item.id === message.id)) {
+    return messages;
+  }
+
+  const last = messages[messages.length - 1];
+
+  if (!last || compareMessages(last, message) <= 0) {
+    return [...messages, message];
+  }
+
+  // Handle out-of-order Realtime events.
+  const next = [...messages];
+
+  let low = 0;
+  let high = next.length;
+
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+
+    if (compareMessages(next[middle], message) <= 0) {
+      low = middle + 1;
+    } else {
+      high = middle;
     }
+  }
+
+  next.splice(low, 0, message);
+
+  return next;
+}
+
+function shallowEqual(a, b) {
+  if (a === b) return true;
+
+  const keys = Object.keys(a);
+
+  return (
+    keys.length === Object.keys(b).length &&
+    keys.every((key) => Object.is(a[key], b[key]))
+  );
+}
+
+function reconcileConversations(previous, incoming) {
+  const previousById = new Map(
+    previous.map((chat) => [chat.id, chat])
+  );
+
+  const next = incoming.map((chat) => {
+    const existing = previousById.get(chat.id);
+
+    return existing && shallowEqual(existing, chat)
+      ? existing
+      : chat;
+  });
+
+  const unchanged =
+    previous.length === next.length &&
+    previous.every((chat, index) => chat === next[index]);
+
+  return unchanged ? previous : next;
+}
+
+const useChatStore = create((set, get) => ({
+  ...INITIAL_STATE,
+
+  fetchConversations: () => {
+    if (conversationRequest) {
+      refreshPending = true;
+      return conversationRequest;
+    }
+
+    const currentGeneration = generation;
+
+    const request = (async () => {
+      do {
+        refreshPending = false;
+
+        try {
+          const incoming = await getConversations();
+
+          if (currentGeneration !== generation) return;
+
+          const current = get().conversations;
+
+          const conversations = reconcileConversations(
+            current,
+            incoming
+          );
+
+          if (conversations !== current) {
+            set({ conversations });
+          }
+        } catch (error) {
+          if (currentGeneration !== generation) return;
+
+          set({
+            error: error.message,
+          });
+        }
+      } while (
+        refreshPending &&
+        currentGeneration === generation
+      );
+    })();
+
+    conversationRequest = request;
+
+    request.finally(() => {
+      if (conversationRequest === request) {
+        conversationRequest = null;
+      }
+    });
+
+    return request;
   },
 
   openChat: async (chatId) => {
     const requestId = ++chatRequestId;
+    const currentGeneration = generation;
+
+    const isCurrent = () =>
+      currentGeneration === generation &&
+      requestId === chatRequestId &&
+      get().activeChatId === chatId;
 
     set({
       activeChatId: chatId,
       messages: [],
       loading: true,
       error: null,
+      replyTo: null,
     });
 
     try {
       const messages = await getMessages(chatId);
 
+      if (!isCurrent()) return;
+
+      set((state) => ({
+        messages: mergeMessages(
+          state.messages,
+          messages
+        ),
+        loading: false,
+      }));
+
+      await get().markRead(chatId);
+    } catch (error) {
+      if (isCurrent()) {
+        set({ error: error.message });
+      }
+    } finally {
+      if (isCurrent() && get().loading) {
+        set({ loading: false });
+      }
+    }
+  },
+
+  syncMessages: async () => {
+    const chatId = get().activeChatId;
+    const currentGeneration = generation;
+    const requestId = chatRequestId;
+
+    if (!chatId) return;
+
+    try {
+      const incoming = await getMessages(chatId);
+
       if (
+        currentGeneration !== generation ||
         requestId !== chatRequestId ||
         get().activeChatId !== chatId
       ) {
         return;
       }
 
-      set((state) => ({
-        messages: mergeMessages(state.messages, messages),
-      }));
+      set((state) => {
+        const messages = mergeMessages(
+          state.messages,
+          incoming
+        );
 
-      await markChatRead(chatId);
-      await get().fetchConversations();
-    } catch (error) {
-      if (requestId === chatRequestId) {
-        set({ error: error.message });
+        const unchanged =
+          messages.length === state.messages.length &&
+          messages.every(
+            (message, index) =>
+              message === state.messages[index]
+          );
+
+        return unchanged ? state : { messages };
+      });
+
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "visible"
+      ) {
+        void get().markRead(chatId);
       }
-    } finally {
-      if (requestId === chatRequestId) {
-        set({ loading: false });
+    } catch (error) {
+      if (
+        currentGeneration === generation &&
+        requestId === chatRequestId
+      ) {
+        console.error(
+          "Failed to synchronise messages:",
+          error
+        );
       }
     }
   },
 
   receiveMessage: (message) => {
-    if (message.conversation_id !== get().activeChatId) {
+    const state = get();
+
+    if (
+      !message?.id ||
+      message.conversation_id !== state.activeChatId
+    ) {
       return;
     }
 
-    set((state) => ({
-      messages: mergeMessages(
-        state.messages,
-        [message]
-      ),
-    }));
-  },
+    const messages = insertMessage(
+      state.messages,
+      message
+    );
 
-  markRead: async (chatId) => {
-    try {
-      await markChatRead(chatId);
-      await get().fetchConversations();
-    } catch (error) {
-      set({ error: error.message });
+    if (messages !== state.messages) {
+      set({ messages });
     }
   },
 
-  send: async (content) => {
-    const chatId = get().activeChatId;
+  markRead: (chatId) => {
+    if (!chatId) return Promise.resolve();
 
-    if (!chatId || get().sending) return false;
+    const existing = readRequests.get(chatId);
 
-    set({ sending: true, error: null });
+    if (existing) {
+      existing.pending = true;
+      return existing.promise;
+    }
 
-    try {
-      const message = await sendMessage(chatId, content);
+    const currentGeneration = generation;
 
-      if (get().activeChatId === chatId) {
-        get().receiveMessage(message);
+    const entry = {
+      pending: false,
+      promise: null,
+    };
+
+    entry.promise = (async () => {
+      try {
+        do {
+          entry.pending = false;
+
+          await markChatRead(chatId);
+
+          if (currentGeneration !== generation) return;
+        } while (entry.pending);
+
+        await get().fetchConversations();
+      } catch (error) {
+        if (currentGeneration === generation) {
+          set({ error: error.message });
+        }
+      } finally {
+        if (readRequests.get(chatId) === entry) {
+          readRequests.delete(chatId);
+        }
       }
+    })();
 
-      await get().fetchConversations();
+    readRequests.set(chatId, entry);
 
-      return true;
-    } catch (error) {
-      set({ error: error.message });
+    return entry.promise;
+  },
+
+send: async (
+  content,
+  imageFile = null,
+  userId = null
+) => {
+  const message = content.trim();
+
+  const {
+    activeChatId,
+    sending,
+    replyTo,
+  } = get();
+
+  if (
+    !activeChatId ||
+    sending ||
+    (!message && !imageFile)
+  ) {
+    return false;
+  }
+
+  if (imageFile && !userId) {
+    set({ error: "Missing user information" });
+    return false;
+  }
+
+  const currentGeneration = generation;
+
+  const replyToId =
+    replyTo?.conversation_id === activeChatId
+      ? replyTo.id
+      : null;
+
+  set({
+    sending: true,
+    error: null,
+  });
+
+  try {
+    let attachment = null;
+
+    if (imageFile) {
+      attachment = await uploadImage({
+        conversationId: activeChatId,
+        userId,
+        file: imageFile,
+      });
+    }
+
+    if (generation !== currentGeneration) {
       return false;
-    } finally {
+    }
+
+    const result = await sendMessage(
+      activeChatId,
+      message,
+      replyToId,
+      attachment
+    );
+
+    if (generation !== currentGeneration) {
+      return false;
+    }
+
+    get().receiveMessage(result);
+
+    const current = get();
+
+    if (
+      current.activeChatId === activeChatId &&
+      current.replyTo === replyTo
+    ) {
+      set({ replyTo: null });
+    }
+
+    void get().fetchConversations();
+
+    return true;
+  } catch (error) {
+    if (
+      generation === currentGeneration &&
+      get().activeChatId === activeChatId
+    ) {
+      set({
+        error:
+          error.message ||
+          "Failed to send message",
+      });
+    }
+
+    return false;
+  } finally {
+    if (generation === currentGeneration) {
       set({ sending: false });
     }
+  }
+},
+
+  closeChat: (chatId) => {
+    if (get().activeChatId !== chatId) return;
+
+    chatRequestId++;
+
+    set({
+      activeChatId: null,
+      messages: [],
+      loading: false,
+      error: null,
+      replyTo: null,
+    });
   },
 
   reset: () => {
-    ++chatRequestId;
+    generation++;
+    chatRequestId++;
+
+    conversationRequest = null;
+    refreshPending = false;
+
+    readRequests.clear();
 
     set({
+      ...INITIAL_STATE,
       conversations: [],
       messages: [],
-      activeChatId: null,
-      loading: false,
-      sending: false,
-      error: null,
     });
   },
+
+setReplyTo: (message) => {
+  if (!message) {
+    set({ replyTo: null });
+    return;
+  }
+
+  if (
+    message.conversation_id !== get().activeChatId
+  ) {
+    return;
+  }
+
+  set({ replyTo: message });
+},
+
+clearReply: () => {
+  if (get().replyTo !== null) {
+    set({ replyTo: null });
+  }
+},
+
 }));
 
 export default useChatStore;

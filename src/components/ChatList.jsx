@@ -2,14 +2,14 @@
 
 "use client";
 
-import { useEffect } from "react";
+import { memo, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+
 import {
   MessageCircle,
   Users,
   UsersRound,
-  Plus,
 } from "lucide-react";
 
 import useChatStore from "@/store/useChatStore";
@@ -34,23 +34,126 @@ function formatTime(date) {
   });
 }
 
+const ChatListItem = memo(function ChatListItem({
+  chat,
+  active,
+}) {
+  const isGroup = chat.type === "group";
+
+  const online = usePresenceStore(
+    (state) =>
+      !isGroup &&
+      state.onlineUserSet.has(chat.other_user_id)
+  );
+
+  const name = isGroup
+    ? chat.group_name || "Unnamed Group"
+    : chat.other_display_name ||
+      chat.other_username ||
+      "Unknown user";
+
+  const unread = Number(chat.unread_count || 0);
+
+  return (
+    <Link
+      href={`/messages/${chat.id}`}
+      className={`flex items-center gap-3 border-b border-gray-800 p-4 transition ${
+        active
+          ? "bg-gray-800"
+          : "hover:bg-gray-800/60"
+      }`}
+    >
+      {/* Avatar */}
+      <div className="relative shrink-0">
+        <div
+          className={`flex h-12 w-12 items-center justify-center rounded-full font-semibold ${
+            isGroup
+              ? "bg-blue-600/20 text-blue-400"
+              : "bg-gray-700 text-white"
+          }`}
+        >
+          {isGroup ? (
+            <UsersRound size={24} />
+          ) : (
+            name[0]?.toUpperCase() || "?"
+          )}
+        </div>
+
+        {!isGroup && (
+          <span
+            title={online ? "Online" : "Offline"}
+            className={`absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 border-gray-900 ${
+              online
+                ? "bg-green-500"
+                : "bg-gray-500"
+            }`}
+          />
+        )}
+      </div>
+
+      {/* Conversation details */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-2">
+          <p
+            className={`truncate text-sm ${
+              unread > 0
+                ? "font-bold text-white"
+                : "font-semibold text-gray-200"
+            }`}
+          >
+            {name}
+          </p>
+
+          <span className="shrink-0 text-xs text-gray-500">
+            {formatTime(
+              chat.last_message_at ||
+                chat.created_at
+            )}
+          </span>
+        </div>
+
+        {isGroup && (
+          <p className="mt-0.5 text-xs text-gray-500">
+            {chat.member_count} members
+          </p>
+        )}
+
+        <div className="mt-1 flex items-center justify-between gap-2">
+          <p
+            className={`truncate text-sm ${
+              unread > 0
+                ? "font-medium text-white"
+                : "text-gray-400"
+            }`}
+          >
+            {chat.last_message ||
+              "Start a conversation"}
+          </p>
+
+          {unread > 0 && (
+            <span className="flex min-w-5 shrink-0 items-center justify-center rounded-full bg-blue-600 px-1.5 py-0.5 text-xs font-bold text-white">
+              {unread > 99 ? "99+" : unread}
+            </span>
+          )}
+        </div>
+      </div>
+    </Link>
+  );
+});
+
 export default function ChatList() {
   const pathname = usePathname();
 
   const conversations = useChatStore(
-    (s) => s.conversations
+    (state) => state.conversations
   );
 
   const fetchConversations = useChatStore(
-    (s) => s.fetchConversations
-  );
-
-  const onlineUsers = usePresenceStore(
-    (s) => s.onlineUsers
+    (state) => state.fetchConversations
   );
 
   useEffect(() => {
-    fetchConversations();
+    void fetchConversations();
   }, [fetchConversations]);
 
   return (
@@ -87,120 +190,18 @@ export default function ChatList() {
         </div>
       </header>
 
-      {/* Conversation List */}
+      {/* Conversations */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {conversations.map((chat) => {
-          const isGroup = chat.type === "group";
+        {conversations.map((chat) => (
+          <ChatListItem
+            key={chat.id}
+            chat={chat}
+            active={
+              pathname === `/messages/${chat.id}`
+            }
+          />
+        ))}
 
-          const name = isGroup
-            ? chat.group_name || "Unnamed Group"
-            : chat.other_display_name ||
-              chat.other_username ||
-              "Unknown user";
-
-          const active =
-            pathname === `/messages/${chat.id}`;
-
-          const online =
-            !isGroup &&
-            onlineUsers.includes(chat.other_user_id);
-
-          const unread = Number(
-            chat.unread_count || 0
-          );
-
-          return (
-            <Link
-              key={chat.id}
-              href={`/messages/${chat.id}`}
-              className={`flex items-center gap-3 border-b border-gray-800 p-4 transition ${
-                active
-                  ? "bg-gray-800"
-                  : "hover:bg-gray-800/60"
-              }`}
-            >
-              {/* Avatar */}
-              <div className="relative shrink-0">
-                <div
-                  className={`flex h-12 w-12 items-center justify-center rounded-full font-semibold text-white ${
-                    isGroup
-                      ? "bg-blue-600/20 text-blue-400"
-                      : "bg-gray-700"
-                  }`}
-                >
-                  {isGroup ? (
-                    <UsersRound size={24} />
-                  ) : (
-                    name[0]?.toUpperCase() || "?"
-                  )}
-                </div>
-
-                {/* Online status: private chats only */}
-                {!isGroup && (
-                  <span
-                    title={online ? "Online" : "Offline"}
-                    className={`absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 border-gray-900 ${
-                      online
-                        ? "bg-green-500"
-                        : "bg-gray-500"
-                    }`}
-                  />
-                )}
-              </div>
-
-              {/* Conversation Details */}
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <p
-                    className={`truncate text-sm ${
-                      unread > 0
-                        ? "font-bold text-white"
-                        : "font-semibold text-gray-200"
-                    }`}
-                  >
-                    {name}
-                  </p>
-
-                  <span className="shrink-0 text-xs text-gray-500">
-                    {formatTime(
-                      chat.last_message_at ||
-                        chat.created_at
-                    )}
-                  </span>
-                </div>
-
-                {/* Group member count */}
-                {isGroup && (
-                  <p className="mt-0.5 text-xs text-gray-500">
-                    {chat.member_count} members
-                  </p>
-                )}
-
-                {/* Last Message and Unread Count */}
-                <div className="mt-1 flex items-center justify-between gap-2">
-                  <p
-                    className={`truncate text-sm ${
-                      unread > 0
-                        ? "font-medium text-white"
-                        : "text-gray-400"
-                    }`}
-                  >
-                    {chat.last_message ||
-                      "Start a conversation"}
-                  </p>
-
-                  {unread > 0 && (
-                    <span className="flex min-w-5 shrink-0 items-center justify-center rounded-full bg-blue-600 px-1.5 py-0.5 text-xs font-bold text-white">
-                      {unread > 99 ? "99+" : unread}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </Link>
-          );
-        })}
-
-        {/* Empty State */}
         {conversations.length === 0 && (
           <div className="flex flex-col items-center gap-3 p-6 text-center">
             <MessageCircle
