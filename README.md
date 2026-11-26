@@ -126,4 +126,4 @@ Distributed under the MIT License. See LICENSE.txt for more information.
 
 ## Project Status
 
-This project is complete but may undergo further development.
+This project is incomplete and requires further development. 
