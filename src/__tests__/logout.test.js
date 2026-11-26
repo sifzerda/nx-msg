@@ -79,7 +79,7 @@ jest.doMock("@/lib/extras/attachments", () => ({
   clearAttachmentCache: mockClearAttachments,
 }));
 
-jest.doMock("@/lib/linkPreviews", () => ({
+jest.doMock("@/lib/extras/linkPreviews", () => ({
   clearLinkPreviewCache: mockClearLinkPreviews,
 }));
 

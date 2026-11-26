@@ -1,4 +1,4 @@
-// src/lib/gifs.js
+// src/lib/extras/gifs.js
 
 import {
   GIPHY_API_URL,

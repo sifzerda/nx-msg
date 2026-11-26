@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { uploadAttachment } from "@/lib/extras/attachments";
 import { getConversations, getMessages, sendMessage, markChatRead } from "@/lib/messages";
-import { isValidGifId } from "@/lib/gifs";
+import { isValidGifId } from "@/lib/extras/gifs";
 
 let generation = 0;
 let chatRequestId = 0;

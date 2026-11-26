@@ -13,7 +13,7 @@ import {
   getCachedLinkPreview,
   getLinkPreview,
   invalidateLinkPreview,
-} from "@/lib/linkPreviews";
+} from "@/lib/extras/linkPreviews";
 
 export default function useLinkPreview({
   messageId,

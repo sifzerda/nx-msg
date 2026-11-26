@@ -18,7 +18,7 @@ import {
   Pause,
 } from "lucide-react";
 
-import { getGifById } from "@/lib/gifs";
+import { getGifById } from "@/lib/extras/gifs";
 
 function GifMessage({ gifId }) {
   const containerRef = useRef(null);

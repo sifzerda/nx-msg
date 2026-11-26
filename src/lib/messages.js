@@ -1,7 +1,7 @@
 // src/lib/messages.js
 
 import { createClient } from "@/lib/supabase/client";
-import { isValidGifId } from "@/lib/gifs";
+import { isValidGifId } from "@/lib/extras/gifs";
 
 const supabase = createClient();
 const MESSAGE_COLUMNS = [

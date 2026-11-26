@@ -1,4 +1,4 @@
-// src/lib/linkPreviews.js
+// src/lib/extras/linkPreviews.js
 
 const MAX_CACHE_ENTRIES = 300;
 const MAX_CONCURRENT_REQUESTS = 3;

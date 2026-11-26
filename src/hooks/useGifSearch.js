@@ -9,7 +9,7 @@ import {
   useCallback,
 } from "react";
 
-import { searchGifs } from "@/lib/gifs";
+import { searchGifs } from "@/lib/extras/gifs";
 
 import {
   GIF_SEARCH_DELAY,

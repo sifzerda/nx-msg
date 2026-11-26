@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/client";
 
 import { clearMessageProfileCache } from "@/lib/messageProfiles";
 import { clearAttachmentCache } from "@/lib/extras/attachments";
-import { clearLinkPreviewCache } from "@/lib/linkPreviews";
+import { clearLinkPreviewCache } from "@/lib/extras/linkPreviews";
 
 import usePushStore from "@/store/usePushStore";
 import useChatStore from "@/store/useChatStore";
@@ -24,18 +24,14 @@ async function cleanupPushSubscription() {
     let cleanupError = null;
 
     if (
-        typeof navigator === "undefined" ||
-        !("serviceWorker" in navigator)
+        typeof navigator === "undefined" || !("serviceWorker" in navigator)
     ) {
         return null;
     }
 
     try {
-        const registration =
-            await navigator.serviceWorker.getRegistration("/");
-
-        const subscription =
-            await registration?.pushManager?.getSubscription();
+        const registration = await navigator.serviceWorker.getRegistration("/");
+        const subscription = await registration?.pushManager?.getSubscription();
 
         if (!subscription) {
             return null;
@@ -48,16 +44,11 @@ async function cleanupPushSubscription() {
                 "/api/push/unsubscribe",
                 {
                     method: "POST",
-
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-
+                    headers: { "Content-Type": "application/json" },
                     cache: "no-store",
 
                     body: JSON.stringify({
                         endpoint: subscription.endpoint,
-
                         // Preserve the user's saved preference.
                         rememberPreference: false,
                     }),
@@ -70,18 +61,14 @@ async function cleanupPushSubscription() {
                     .catch(() => ({}));
 
                 throw new Error(
-                    result.error ||
-                    `Push unsubscribe failed (${response.status})`
+                    result.error || `Push unsubscribe failed (${response.status})`
                 );
             }
 
         } catch (error) {
             cleanupError = error;
 
-            console.error(
-                "Server push cleanup failed:",
-                error
-            );
+            console.error("Server push cleanup failed:", error);
         }
 
         /* -------------------- BROWSER CLEANUP -------------------- */
@@ -90,31 +77,22 @@ async function cleanupPushSubscription() {
         // of whether server cleanup succeeded.
 
         try {
-            const removed =
-                await subscription.unsubscribe();
+            const removed = await subscription.unsubscribe();
 
             if (!removed) {
-                throw new Error(
-                    "Browser subscription could not be removed"
-                );
+                throw new Error("Browser subscription could not be removed");
             }
 
         } catch (error) {
             cleanupError ??= error;
 
-            console.error(
-                "Browser push cleanup failed:",
-                error
-            );
+            console.error("Browser push cleanup failed:", error);
         }
 
     } catch (error) {
         cleanupError ??= error;
 
-        console.error(
-            "Push cleanup failed:",
-            error
-        );
+        console.error("Push cleanup failed:", error);
     }
 
     return cleanupError;
@@ -155,23 +133,18 @@ async function performLogout() {
         } catch (error) {
             pushCleanupError = error;
 
-            console.error(
-                "Failed to prepare notifications for logout:",
-                error
-            );
+            console.error("Failed to prepare notifications for logout:", error);
         }
 
         /* -------------------- PUSH CLEANUP -------------------- */
 
-        const cleanupError =
-            await cleanupPushSubscription();
+        const cleanupError = await cleanupPushSubscription();
 
         pushCleanupError ??= cleanupError;
 
         /* -------------------- SIGN OUT -------------------- */
 
-        const { error: signOutError } =
-            await supabase.auth.signOut();
+        const { error: signOutError } = await supabase.auth.signOut();
 
         if (signOutError) {
             throw signOutError;
