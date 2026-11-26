@@ -119,11 +119,7 @@ export async function GET(request) {
         /* -------------------- PREVIEW LOOKUP -------------------- */
 
         const admin = createAdminClient();
-
-        const preview = await getCachedPreview(
-            admin,
-            url
-        );
+        const preview = await getCachedPreview(admin, url);
 
         if (
             !preview ||
