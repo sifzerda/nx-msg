@@ -1,27 +1,14 @@
 // src/components/MessageInput.jsx
-
 "use client";
 
-import {
-  memo,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
-
-import {
-  Send,
-  ImagePlus,
-  LoaderCircle,
-} from "lucide-react";
-
+import { memo, useEffect, useRef, useState } from "react";
+import { Send, Paperclip, LoaderCircle } from "lucide-react";
 import useChatStore from "@/store/useChatStore";
-
 import { compressImage } from "@/utils/compressImage";
-import { ALLOWED_IMAGE_TYPES } from "@/constants/attachments";
-
+import { isImageFile, validateFile, normalizeFile, getFileExtension } from "@/utils/fileUtils";
+import { FILE_ACCEPT, FILE_TYPES } from "@/constants/attachments";
 import ReplyPreview from "./ReplyPreview";
-import ImagePreview from "./extras/ImagePreview";
+import AttachmentPreview from "./extras/AttachmentPreview";
 
 function MessageInput({
   onTyping,
@@ -34,19 +21,16 @@ function MessageInput({
   const selectionIdRef = useRef(0);
 
   const [text, setText] = useState("");
-  const [image, setImage] = useState(null);
+  const [attachment, setAttachment] = useState(null);
   const [processing, setProcessing] = useState(false);
-  const [imageError, setImageError] = useState(null);
+  const [attachmentError, setAttachmentError] = useState(null);
 
   const send = useChatStore((s) => s.send);
   const sending = useChatStore((s) => s.sending);
-  const replyTo = useChatStore((s) => s.replyTo);
+  const replyTo = useChatStore((s) => s.replyTo)
   const clearReply = useChatStore((s) => s.clearReply);
 
-  const canSend =
-    !sending &&
-    !processing &&
-    Boolean(text.trim() || image);
+  const canSend = !sending && !processing && Boolean(text.trim() || attachment);
 
   useEffect(() => {
     if (replyTo) {
@@ -67,7 +51,7 @@ function MessageInput({
     onTyping?.(value);
   }
 
-  async function handleImageSelection(event) {
+  async function handleFileSelection(event) {
     const file = event.target.files?.[0];
 
     event.target.value = "";
@@ -77,10 +61,25 @@ function MessageInput({
     const selectionId = ++selectionIdRef.current;
 
     setProcessing(true);
-    setImageError(null);
+    setAttachmentError(null);
 
     try {
-      const compressed = await compressImage(file);
+      let processedFile;
+
+      if (isImageFile(file)) {
+        const extension = getFileExtension(file.name);
+        const mimeType = FILE_TYPES[extension];
+        const imageFile = file.type === mimeType ? file : new File([file], file.name, {
+                type: mimeType,
+                lastModified: file.lastModified,
+              });
+
+        processedFile = await compressImage(imageFile);
+      } else {
+        validateFile(file);
+
+        processedFile = normalizeFile(file);
+      }
 
       if (
         selectionId !== selectionIdRef.current
@@ -88,16 +87,14 @@ function MessageInput({
         return;
       }
 
-      setImage(compressed);
+      setAttachment(processedFile);
+
       inputRef.current?.focus();
     } catch (error) {
       if (
         selectionId === selectionIdRef.current
       ) {
-        setImageError(
-          error.message ||
-          "Unable to process image"
-        );
+        setAttachmentError(error.message || "Unable to process attachment");
       }
     } finally {
       if (
@@ -108,13 +105,13 @@ function MessageInput({
     }
   }
 
-  function removeImage() {
+  function removeAttachment() {
     if (sending) return;
 
     selectionIdRef.current += 1;
 
-    setImage(null);
-    setImageError(null);
+    setAttachment(null);
+    setAttachmentError(null);
     setProcessing(false);
   }
 
@@ -124,9 +121,9 @@ function MessageInput({
     if (replyTo) {
       event.preventDefault();
       clearReply();
-    } else if (image) {
+    } else if (attachment) {
       event.preventDefault();
-      removeImage();
+      removeAttachment();
     }
   }
 
@@ -136,31 +133,17 @@ function MessageInput({
     if (!canSend) return;
 
     const submittedText = text;
-    const submittedImage = image;
+    const submittedAttachment = attachment;
 
     onStopTyping?.();
 
-    const success = await send(
-      submittedText.trim(),
-      submittedImage,
-      userId
-    );
+    const success = await send(submittedText.trim(), submittedAttachment, userId);
 
-    if (success) {
-      setText((current) =>
-        current === submittedText
-          ? ""
-          : current
-      );
+    if (!success) return;
 
-      setImage((current) =>
-        current === submittedImage
-          ? null
-          : current
-      );
-
-      setImageError(null);
-    }
+    setText((current) => current === submittedText ? "" : current);
+    setAttachment((current) => current === submittedAttachment ? null : current);
+    setAttachmentError(null);
   }
 
   return (
@@ -171,41 +154,32 @@ function MessageInput({
         onCancel={clearReply}
       />
 
-      {imageError && (
-        <p
-          role="alert"
-          className="px-4 py-2 text-sm text-red-400"
-        >
-          {imageError}
+      {attachmentError && (
+        <p role="alert" className="px-4 py-2 text-sm text-red-400">
+          {attachmentError}
         </p>
       )}
 
-      <ImagePreview
-        file={image}
-        onRemove={removeImage}
+      <AttachmentPreview
+        file={attachment}
+        onRemove={removeAttachment}
         uploading={sending}
       />
 
-      <form
-        onSubmit={handleSubmit}
-        className="flex min-w-0 items-center gap-2 p-3 sm:gap-3 sm:p-4"
-      >
+      <form onSubmit={handleSubmit} className="flex min-w-0 items-center gap-2 p-3 sm:gap-3 sm:p-4">
         <input
           ref={fileInputRef}
           type="file"
-          accept={ALLOWED_IMAGE_TYPES.join(",")}
-          onChange={handleImageSelection}
+          accept={FILE_ACCEPT}
+          onChange={handleFileSelection}
           className="hidden"
         />
 
-        <button
-          type="button"
+        <button type="button"
           disabled={sending || processing}
-          onClick={() =>
-            fileInputRef.current?.click()
-          }
-          title="Attach image"
-          aria-label="Attach image"
+          onClick={() => fileInputRef.current?.click()}
+          title="Attach a file"
+          aria-label="Attach a file"
           className="flex shrink-0 items-center justify-center rounded-xl p-2.5 text-gray-400 transition-colors hover:bg-gray-800 hover:text-blue-400 disabled:opacity-50"
         >
           {processing ? (
@@ -214,7 +188,7 @@ function MessageInput({
               className="animate-spin"
             />
           ) : (
-            <ImagePlus size={22} />
+            <Paperclip size={22} />
           )}
         </button>
 
@@ -226,7 +200,7 @@ function MessageInput({
           onBlur={onStopTyping}
           onKeyDown={handleKeyDown}
           placeholder={
-            image
+            attachment
               ? "Add a caption..."
               : replyTo
                 ? "Type a reply..."

@@ -3,6 +3,7 @@
 "use client";
 
 import { memo } from "react";
+import { getMessagePreview } from "@/utils/messagePreview";
 
 function QuotedMessage({
   message,
@@ -10,38 +11,35 @@ function QuotedMessage({
   isOwn,
   onClick,
 }) {
+  const preview = getMessagePreview(message);
+
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={!message || !onClick}
-      className={`mb-2 block w-full min-w-0 rounded-md border-l-2 px-3 py-2 text-left transition-colors ${isOwn
+      className={[
+        "mb-2 block w-full min-w-0 rounded-lg",
+        "border-l-2 px-3 py-2 text-left",
+        "transition-colors",
+        isOwn
           ? "border-blue-300 bg-black/20 hover:bg-black/30"
-          : "border-blue-500 bg-gray-950/60 hover:bg-gray-950"
-        }`}
+          : "border-blue-500 bg-gray-950/60 hover:bg-gray-950/80",
+      ].join(" ")}
     >
       <p
-        className={`truncate text-xs font-semibold ${isOwn
-            ? "text-blue-200"
-            : "text-blue-400"
-          }`}
+        className={[
+          "truncate text-xs font-semibold",
+          isOwn ? "text-blue-200" : "text-blue-400",
+        ].join(" ")}
       >
         {message
-          ? message.content ||
-          (message.attachment_type === "image"
-            ? "Photo"
-            : "Attachment")
-          : "Message unavailable"}
+          ? senderName || "Member"
+          : "Original message"}
       </p>
 
-      <p
-        className={`mt-1 line-clamp-2 wrap-break-word text-xs ${isOwn
-            ? "text-blue-100"
-            : "text-gray-400"
-          }`}
-      >
-        {message?.content ||
-          "Message unavailable"}
+      <p className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-xs opacity-80 [overflow-wrap:anywhere]">
+        {preview}
       </p>
     </button>
   );

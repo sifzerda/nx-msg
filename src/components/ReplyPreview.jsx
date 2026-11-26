@@ -4,6 +4,7 @@
 
 import { memo } from "react";
 import { Reply, X } from "lucide-react";
+import { getMessagePreview } from "@/utils/messagePreview";
 
 function ReplyPreview({
   message,
@@ -12,8 +13,10 @@ function ReplyPreview({
 }) {
   if (!message) return null;
 
+  const preview = getMessagePreview(message);
+
   return (
-    <div className="flex min-w-0 items-center gap-3 border-b border-gray-800 bg-gray-900/70 px-4 py-3">
+    <div className="flex min-w-0 items-center gap-3 border-b border-gray-800 bg-gray-900/80 px-4 py-3">
       <Reply
         size={20}
         className="shrink-0 text-blue-400"
@@ -25,10 +28,7 @@ function ReplyPreview({
         </p>
 
         <p className="mt-1 truncate text-sm text-gray-300">
-          {message.content ||
-            (message.attachment_type === "image"
-              ? "Photo"
-              : "Attachment")}
+          {preview}
         </p>
       </div>
 
@@ -36,7 +36,6 @@ function ReplyPreview({
         type="button"
         onClick={onCancel}
         aria-label="Cancel reply"
-        title="Cancel reply"
         className="shrink-0 rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-800 hover:text-white"
       >
         <X size={18} />

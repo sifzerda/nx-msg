@@ -1,14 +1,8 @@
 // src/lib/extras/attachments.js
 
 import { createClient } from "@/lib/supabase/client";
-
-import {
-  ATTACHMENT_BUCKET,
-  MAX_IMAGE_SIZE,
-  ALLOWED_IMAGE_TYPES,
-  IMAGE_EXTENSIONS,
-  SIGNED_URL_EXPIRY,
-} from "@/constants/attachments";
+import { ATTACHMENT_BUCKET, MAX_IMAGE_SIZE, SIGNED_URL_EXPIRY } from "@/constants/attachments";
+import { validateFile, normalizeFile } from "@/utils/fileUtils";
 
 const supabase = createClient();
 
@@ -20,7 +14,7 @@ const EXPIRY_BUFFER = 60 * 1000;
 
 let cacheGeneration = 0;
 
-export async function uploadImage({
+export async function uploadAttachment({
   conversationId,
   userId,
   file,
@@ -29,24 +23,23 @@ export async function uploadImage({
     throw new Error("Missing attachment information");
   }
 
-  if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
-    throw new Error("Unsupported image format");
-  }
+  const {
+    extension,
+    mimeType,
+    isImage,
+  } = validateFile(file);
 
-  if (file.size > MAX_IMAGE_SIZE) {
+  if (isImage && file.size > MAX_IMAGE_SIZE) {
     throw new Error("Image exceeds the 5 MB limit");
   }
 
-  const extension = IMAGE_EXTENSIONS[file.type];
-
-  const path =
-    `${conversationId}/${userId}/` +
-    `${crypto.randomUUID()}.${extension}`;
+  const normalizedFile = normalizeFile(file);
+  const path = `${conversationId}/${userId}/` + `${crypto.randomUUID()}.${extension}`;
 
   const { error } = await supabase.storage
     .from(ATTACHMENT_BUCKET)
-    .upload(path, file, {
-      contentType: file.type,
+    .upload(path, normalizedFile, {
+      contentType: mimeType,
       cacheControl: "300",
       upsert: false,
     });
@@ -55,8 +48,10 @@ export async function uploadImage({
 
   return {
     path,
-    type: "image",
+    type: isImage ? "image" : "file",
     name: file.name.slice(0, 255),
+    size: file.size,
+    mimeType,
   };
 }
 
@@ -84,8 +79,7 @@ export async function getAttachmentUrl(path, userId) {
   const cached = urlCache.get(key);
 
   if (
-    cached &&
-    cached.expiresAt > Date.now() + EXPIRY_BUFFER
+    cached && cached.expiresAt > Date.now() + EXPIRY_BUFFER
   ) {
     return cached;
   }
@@ -139,4 +133,34 @@ export function clearAttachmentCache() {
 
   urlCache.clear();
   pendingRequests.clear();
+}
+
+export async function downloadAttachment(path, name) {
+  if (!path) {
+    throw new Error("Missing attachment path");
+  }
+
+  const { data, error } = await supabase.storage
+    .from(ATTACHMENT_BUCKET)
+    .download(path);
+
+  if (error) throw error;
+
+  const url = URL.createObjectURL(data);
+  const anchor = document.createElement("a");
+
+  anchor.href = url;
+  anchor.download = name || "attachment";
+
+  document.body.appendChild(anchor);
+
+  try {
+    anchor.click();
+  } finally {
+    anchor.remove();
+
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 30000);
+  }
 }

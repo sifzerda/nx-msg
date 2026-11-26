@@ -4,6 +4,7 @@
 
 import {
   memo,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -19,12 +20,14 @@ import {
 } from "lucide-react";
 
 import useConversationSearch from "@/hooks/useConversationSearch";
-import SearchResult from "../SearchResult";
+import SearchResult from "./SearchResult";
+
+const EMPTY_MESSAGES = [];
 
 function ConversationSearch({
   conversationId,
   userId,
-  messages,
+  messages = EMPTY_MESSAGES,
   onClose,
   onJumpToMessage,
 }) {
@@ -40,22 +43,17 @@ function ConversationSearch({
     hasMore,
     error,
     loadMore,
-  } = useConversationSearch(
-    conversationId
-  );
+  } = useConversationSearch(conversationId);
 
   const loadedIds = useMemo(
-    () =>
-      new Set(
-        messages.map(
-          (message) => message.id
-        )
-      ),
+    () => new Set(messages.map((message) => message.id)),
     [messages]
   );
 
-  const validQuery =
-    query.trim().length >= 2;
+  const validQuery = query.trim().length >= 2;
+
+  const showResults =
+    validQuery && !loading && results.length > 0;
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -64,14 +62,12 @@ function ConversationSearch({
   useEffect(() => {
     function handleKeyDown(event) {
       if (event.key === "Escape") {
+        event.preventDefault();
         onClose?.();
       }
     }
 
-    document.addEventListener(
-      "keydown",
-      handleKeyDown
-    );
+    document.addEventListener("keydown", handleKeyDown);
 
     return () => {
       document.removeEventListener(
@@ -81,13 +77,19 @@ function ConversationSearch({
     };
   }, [onClose]);
 
-  function handleSelect(messageId) {
-    if (!loadedIds.has(messageId)) {
-      return;
-    }
+  const handleSelect = useCallback(
+    (messageId) => {
+      if (loadedIds.has(messageId)) {
+        onJumpToMessage?.(messageId);
+      }
+    },
+    [loadedIds, onJumpToMessage]
+  );
 
-    onJumpToMessage?.(messageId);
-  }
+  const handleClear = useCallback(() => {
+    clearSearch();
+    inputRef.current?.focus();
+  }, [clearSearch]);
 
   return (
     <section
@@ -130,35 +132,34 @@ function ConversationSearch({
             onChange={(event) =>
               setQuery(event.target.value)
             }
-            placeholder="Search messages..."
-            aria-label="Search messages"
+            placeholder="Search messages and files..."
+            aria-label="Search messages and files"
             maxLength={200}
             autoComplete="off"
             className="min-w-0 flex-1 bg-transparent py-3 text-sm text-white outline-none placeholder:text-gray-500 [&::-webkit-search-cancel-button]:hidden"
           />
 
-          {loading ? (
+          {loading && (
             <LoaderCircle
               size={17}
               className="shrink-0 animate-spin text-blue-400"
             />
-          ) : query ? (
+          )}
+
+          {query && (
             <button
               type="button"
-              onClick={() => {
-                clearSearch();
-                inputRef.current?.focus();
-              }}
+              onClick={handleClear}
               aria-label="Clear search"
               className="rounded-md p-1 text-gray-500 hover:text-white"
             >
               <X size={16} />
             </button>
-          ) : null}
+          )}
         </div>
       </div>
 
-      {/* Results */}
+      {/* Search results */}
       <div
         aria-busy={loading || loadingMore}
         className="max-h-[35dvh] min-h-0 overflow-y-auto overscroll-contain px-4 pb-4"
@@ -171,7 +172,11 @@ function ConversationSearch({
             />
 
             <p className="text-sm text-gray-400">
-              Search your message history
+              Search your conversation history
+            </p>
+
+            <p className="text-xs text-gray-600">
+              Search messages, captions and filenames
             </p>
 
             <p className="text-xs text-gray-600">
@@ -180,16 +185,16 @@ function ConversationSearch({
           </div>
         )}
 
-        {loading && (
+        {validQuery && loading && (
           <p
             role="status"
             className="py-4 text-center text-sm text-gray-400"
           >
-            Searching messages...
+            Searching conversation...
           </p>
         )}
 
-        {error && (
+        {validQuery && error && (
           <p
             role="alert"
             className="rounded-lg bg-red-950/30 p-3 text-sm text-red-400"
@@ -209,12 +214,12 @@ function ConversationSearch({
               />
 
               <p className="text-sm text-gray-400">
-                No matching messages
+                No matching messages or files
               </p>
             </div>
           )}
 
-        {results.length > 0 && (
+        {showResults && (
           <>
             <p
               aria-live="polite"
@@ -234,9 +239,7 @@ function ConversationSearch({
                   message={message}
                   query={query}
                   userId={userId}
-                  canJump={loadedIds.has(
-                    message.id
-                  )}
+                  canJump={loadedIds.has(message.id)}
                   onSelect={handleSelect}
                 />
               ))}
@@ -244,7 +247,7 @@ function ConversationSearch({
           </>
         )}
 
-        {hasMore && (
+        {showResults && hasMore && (
           <button
             type="button"
             onClick={loadMore}

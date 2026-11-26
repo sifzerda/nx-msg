@@ -8,6 +8,7 @@ import QuotedMessage from "./extras/QuotedMessage";
 import ReactionPicker from "./extras/ReactionPicker";
 import MessageReactions from "./MessageReactions";
 import ImageAttachment from "./extras/ImageAttachment";
+import FileAttachment from "./extras/FileAttachment";
 
 const EMPTY_REACTIONS = [];
 const timeFormatter = new Intl.DateTimeFormat("en-AU", { hour: "numeric", minute: "2-digit" });
@@ -67,8 +68,8 @@ function MessageBubble({
       <div className="min-w-0 max-w-[calc(100%-80px)] sm:max-w-[75%]">
         <div
           className={`min-w-0 rounded-2xl px-4 py-2.5 ${isOwn
-              ? "rounded-br-sm bg-blue-600 text-white"
-              : "rounded-bl-sm bg-gray-800 text-gray-100"
+            ? "rounded-br-sm bg-blue-600 text-white"
+            : "rounded-bl-sm bg-gray-800 text-gray-100"
             }`}
         >
           {/* Quoted reply */}
@@ -95,6 +96,15 @@ function MessageBubble({
               />
             )}
 
+          {message.attachment_type === "file" &&
+            message.attachment_path && (
+              <FileAttachment
+                path={message.attachment_path}
+                name={message.attachment_name}
+                size={message.attachment_size}
+              />
+            )}
+
           {message.content && (
             <p className="whitespace-pre-wrap wrap-break-word text-sm">
               {message.content}
@@ -104,8 +114,8 @@ function MessageBubble({
           {/* Timestamp and read receipts */}
           <div
             className={`mt-1 flex items-center justify-end gap-1 text-[11px] ${isOwn
-                ? "text-blue-200"
-                : "text-gray-400"
+              ? "text-blue-200"
+              : "text-gray-400"
               }`}
           >
             <time dateTime={message.created_at}>

@@ -3,16 +3,11 @@
 import { createClient } from "@/lib/supabase/client";
 
 const supabase = createClient();
-const MESSAGE_COLUMNS = "id, conversation_id, sender_id, content, created_at, reply_to_id, attachment_path, attachment_type, attachment_name";
+const MESSAGE_COLUMNS = "id, conversation_id, sender_id, content, created_at, reply_to_id, attachment_path, attachment_type, attachment_name, attachment_size, attachment_mime_type";
 const MESSAGE_LIMIT = 100;
 
 export async function startChat(contactId) {
-  const { data, error } = await supabase.rpc(
-    "start_private_chat",
-    {
-      other_user_id: contactId,
-    }
-  );
+  const { data, error } = await supabase.rpc("start_private_chat", { other_user_id: contactId });
 
   if (error) throw error;
 
@@ -27,15 +22,11 @@ export async function createGroupChat(name, memberIds) {
   ];
 
   if (!groupName || groupName.length > 100) {
-    throw new Error(
-      "Group name must contain 1–100 characters"
-    );
+    throw new Error("Group name must contain 1–100 characters");
   }
 
   if (members.length < 2 || members.length > 49) {
-    throw new Error(
-      "Select between 2 and 49 contacts"
-    );
+    throw new Error("Select between 2 and 49 contacts");
   }
 
   const { data, error } = await supabase.rpc("create_group_chat", { group_name: groupName, member_ids: members });
@@ -80,8 +71,7 @@ export async function sendMessage(
   const message = content.trim();
 
   if (
-    message.length > 5000 ||
-    (!message && !attachment)
+    message.length > 5000 || (!message && !attachment)
   ) {
     throw new Error("Invalid message content");
   }
@@ -91,8 +81,8 @@ export async function sendMessage(
       chat_id: conversationId,
       message_content: message,
       reply_id: replyToId,
-      image_path: attachment?.path ?? null,
-      image_name: attachment?.name ?? null,
+      file_path: attachment?.path ?? null,
+      file_name: attachment?.name ?? null,
     })
     .single();
 

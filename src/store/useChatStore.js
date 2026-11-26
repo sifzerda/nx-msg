@@ -1,13 +1,8 @@
 // src/store/useChatStore.js
 
 import { create } from "zustand";
-import { uploadImage } from "@/lib/extras/attachments";
-import {
-  getConversations,
-  getMessages,
-  sendMessage,
-  markChatRead,
-} from "@/lib/messages";
+import { uploadAttachment } from "@/lib/extras/attachments";
+import { getConversations, getMessages, sendMessage, markChatRead } from "@/lib/messages";
 
 let generation = 0;
 let chatRequestId = 0;
@@ -28,9 +23,7 @@ const INITIAL_STATE = {
 
 function compareMessages(a, b) {
   return (
-    Date.parse(a.created_at) -
-    Date.parse(b.created_at) ||
-    a.id.localeCompare(b.id)
+    Date.parse(a.created_at) - Date.parse(b.created_at) || a.id.localeCompare(b.id)
   );
 }
 
@@ -87,16 +80,12 @@ function shallowEqual(a, b) {
   const keys = Object.keys(a);
 
   return (
-    keys.length === Object.keys(b).length &&
-    keys.every((key) => Object.is(a[key], b[key]))
+    keys.length === Object.keys(b).length && keys.every((key) => Object.is(a[key], b[key]))
   );
 }
 
 function reconcileConversations(previous, incoming) {
-  const previousById = new Map(
-    previous.map((chat) => [chat.id, chat])
-  );
-
+  const previousById = new Map(previous.map((chat) => [chat.id, chat]));
   const next = incoming.map((chat) => {
     const existing = previousById.get(chat.id);
 
@@ -105,9 +94,7 @@ function reconcileConversations(previous, incoming) {
       : chat;
   });
 
-  const unchanged =
-    previous.length === next.length &&
-    previous.every((chat, index) => chat === next[index]);
+  const unchanged = previous.length === next.length && previous.every((chat, index) => chat === next[index]);
 
   return unchanged ? previous : next;
 }
@@ -133,11 +120,7 @@ const useChatStore = create((set, get) => ({
           if (currentGeneration !== generation) return;
 
           const current = get().conversations;
-
-          const conversations = reconcileConversations(
-            current,
-            incoming
-          );
+          const conversations = reconcileConversations(current, incoming);
 
           if (conversations !== current) {
             set({ conversations });
@@ -150,8 +133,7 @@ const useChatStore = create((set, get) => ({
           });
         }
       } while (
-        refreshPending &&
-        currentGeneration === generation
+        refreshPending && currentGeneration === generation
       );
     })();
 
@@ -169,11 +151,7 @@ const useChatStore = create((set, get) => ({
   openChat: async (chatId) => {
     const requestId = ++chatRequestId;
     const currentGeneration = generation;
-
-    const isCurrent = () =>
-      currentGeneration === generation &&
-      requestId === chatRequestId &&
-      get().activeChatId === chatId;
+    const isCurrent = () => currentGeneration === generation && requestId === chatRequestId && get().activeChatId === chatId;
 
     set({
       activeChatId: chatId,
@@ -219,44 +197,28 @@ const useChatStore = create((set, get) => ({
       const incoming = await getMessages(chatId);
 
       if (
-        currentGeneration !== generation ||
-        requestId !== chatRequestId ||
-        get().activeChatId !== chatId
+        currentGeneration !== generation || requestId !== chatRequestId || get().activeChatId !== chatId
       ) {
         return;
       }
 
       set((state) => {
-        const messages = mergeMessages(
-          state.messages,
-          incoming
-        );
-
-        const unchanged =
-          messages.length === state.messages.length &&
-          messages.every(
-            (message, index) =>
-              message === state.messages[index]
-          );
+        const messages = mergeMessages(state.messages, incoming);
+        const unchanged = messages.length === state.messages.length && messages.every((message, index) => message === state.messages[index]);
 
         return unchanged ? state : { messages };
       });
 
       if (
-        typeof document !== "undefined" &&
-        document.visibilityState === "visible"
+        typeof document !== "undefined" && document.visibilityState === "visible"
       ) {
         void get().markRead(chatId);
       }
     } catch (error) {
       if (
-        currentGeneration === generation &&
-        requestId === chatRequestId
+        currentGeneration === generation && requestId === chatRequestId
       ) {
-        console.error(
-          "Failed to synchronise messages:",
-          error
-        );
+        console.error("Failed to synchronise messages:", error);
       }
     }
   },
@@ -265,16 +227,12 @@ const useChatStore = create((set, get) => ({
     const state = get();
 
     if (
-      !message?.id ||
-      message.conversation_id !== state.activeChatId
+      !message?.id || message.conversation_id !== state.activeChatId
     ) {
       return;
     }
 
-    const messages = insertMessage(
-      state.messages,
-      message
-    );
+    const messages = insertMessage(state.messages, message);
 
     if (messages !== state.messages) {
       set({ messages });
@@ -292,11 +250,7 @@ const useChatStore = create((set, get) => ({
     }
 
     const currentGeneration = generation;
-
-    const entry = {
-      pending: false,
-      promise: null,
-    };
+    const entry = { pending: false, promise: null };
 
     entry.promise = (async () => {
       try {
@@ -325,103 +279,77 @@ const useChatStore = create((set, get) => ({
     return entry.promise;
   },
 
-send: async (
-  content,
-  imageFile = null,
-  userId = null
-) => {
-  const message = content.trim();
+  send: async (content, attachmentFile = null, userId = null) => {
+    const message = content.trim();
+    const { activeChatId, sending, replyTo } = get();
 
-  const {
-    activeChatId,
-    sending,
-    replyTo,
-  } = get();
-
-  if (
-    !activeChatId ||
-    sending ||
-    (!message && !imageFile)
-  ) {
-    return false;
-  }
-
-  if (imageFile && !userId) {
-    set({ error: "Missing user information" });
-    return false;
-  }
-
-  const currentGeneration = generation;
-
-  const replyToId =
-    replyTo?.conversation_id === activeChatId
-      ? replyTo.id
-      : null;
-
-  set({
-    sending: true,
-    error: null,
-  });
-
-  try {
-    let attachment = null;
-
-    if (imageFile) {
-      attachment = await uploadImage({
-        conversationId: activeChatId,
-        userId,
-        file: imageFile,
-      });
-    }
-
-    if (generation !== currentGeneration) {
+    if (
+      !activeChatId || sending || (!message && !attachmentFile)
+    ) {
       return false;
     }
 
-    const result = await sendMessage(
-      activeChatId,
-      message,
-      replyToId,
-      attachment
-    );
-
-    if (generation !== currentGeneration) {
+    if (attachmentFile && !userId) {
+      set({ error: "Missing user information" });
       return false;
     }
 
-    get().receiveMessage(result);
+    const currentGeneration = generation;
+    const replyToId = replyTo?.conversation_id === activeChatId ? replyTo.id : null;
 
-    const current = get();
+    set({
+      sending: true,
+      error: null,
+    });
 
-    if (
-      current.activeChatId === activeChatId &&
-      current.replyTo === replyTo
-    ) {
-      set({ replyTo: null });
+    try {
+      const attachment = attachmentFile
+        ? await uploadAttachment({
+          conversationId: activeChatId,
+          userId,
+          file: attachmentFile,
+        })
+        : null;
+
+      if (generation !== currentGeneration) {
+        return false;
+      }
+
+      const result = await sendMessage(activeChatId, message, replyToId, attachment);
+
+      if (generation !== currentGeneration) {
+        return false;
+      }
+
+      get().receiveMessage(result);
+
+      const current = get();
+
+      if (
+        current.activeChatId === activeChatId && current.replyTo === replyTo
+      ) {
+        set({ replyTo: null });
+      }
+
+      void get().fetchConversations();
+
+      return true;
+    } catch (error) {
+      if (
+        generation === currentGeneration && get().activeChatId === activeChatId
+      ) {
+        set({
+          error: error.message || "Failed to send message",
+        });
+      }
+
+      return false;
+    } finally {
+      if (generation === currentGeneration) {
+        set({ sending: false });
+      }
     }
-
-    void get().fetchConversations();
-
-    return true;
-  } catch (error) {
-    if (
-      generation === currentGeneration &&
-      get().activeChatId === activeChatId
-    ) {
-      set({
-        error:
-          error.message ||
-          "Failed to send message",
-      });
-    }
-
-    return false;
-  } finally {
-    if (generation === currentGeneration) {
-      set({ sending: false });
-    }
-  }
-},
+  },
 
   closeChat: (chatId) => {
     if (get().activeChatId !== chatId) return;
@@ -453,26 +381,26 @@ send: async (
     });
   },
 
-setReplyTo: (message) => {
-  if (!message) {
-    set({ replyTo: null });
-    return;
-  }
+  setReplyTo: (message) => {
+    if (!message) {
+      set({ replyTo: null });
+      return;
+    }
 
-  if (
-    message.conversation_id !== get().activeChatId
-  ) {
-    return;
-  }
+    if (
+      message.conversation_id !== get().activeChatId
+    ) {
+      return;
+    }
 
-  set({ replyTo: message });
-},
+    set({ replyTo: message });
+  },
 
-clearReply: () => {
-  if (get().replyTo !== null) {
-    set({ replyTo: null });
-  }
-},
+  clearReply: () => {
+    if (get().replyTo !== null) {
+      set({ replyTo: null });
+    }
+  },
 
 }));
 
