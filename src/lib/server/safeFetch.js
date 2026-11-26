@@ -17,6 +17,9 @@ import {
     ALLOWED_IMAGE_CONTENT_TYPES,
     ALLOWED_JSON_CONTENT_TYPES,
 } from "@/constants/linkPreviews";
+import {
+    isPreviewAllowed,
+} from "@/utils/previewUrlPolicy";
 
 const REDIRECT_STATUSES = new Set([
     301,
@@ -69,9 +72,7 @@ const BLOCKED_IPV6_RANGES = [
     "3fff::/20",
 ].map((range) => ipaddr.parseCIDR(range));
 
-const GLOBAL_IPV6_RANGE =
-    ipaddr.parseCIDR("2000::/3");
-
+const GLOBAL_IPV6_RANGE = ipaddr.parseCIDR("2000::/3");
 
 /* -------------------- IP VALIDATION -------------------- */
 
@@ -472,15 +473,21 @@ async function safeFetchResource(
         httpsOnly = false,
         allowedHostnames = null,
         maxRedirects = MAX_REDIRECTS,
+        timeoutMs = FETCH_TIMEOUT,
     }
 ) {
+    if (
+        !Number.isFinite(timeoutMs) ||
+        timeoutMs <= 0
+    ) {
+        throw new Error("Invalid request timeout");
+    }
+
     const controller = new AbortController();
 
     const timeout = setTimeout(() => {
-        controller.abort(
-            new Error("Website request timed out")
-        );
-    }, FETCH_TIMEOUT);
+        controller.abort(new Error("Website request timed out"));
+    }, Math.min(timeoutMs, FETCH_TIMEOUT));
 
     let currentUrl = value;
 
@@ -491,6 +498,10 @@ async function safeFetchResource(
             redirectCount++
         ) {
             const { url, hostname } = validateTarget(currentUrl);
+
+            if (!isPreviewAllowed(url.href)) {
+                throw new Error("Sensitive preview URL blocked");
+            }
 
             if (
                 allowedHostnames && !allowedHostnames.has(hostname)
@@ -593,13 +604,12 @@ async function safeFetchResource(
 
 /* -------------------- HTML FETCH -------------------- */
 
-export async function safeFetchHtml(value) {
+export async function safeFetchHtml(value, { timeoutMs = FETCH_TIMEOUT } = {}) {
     const result = await safeFetchResource(value, {
         accept: "text/html,application/xhtml+xml",
-
         allowedContentTypes: ALLOWED_CONTENT_TYPES,
-
         readBody: readLimitedBody,
+        timeoutMs,
     });
 
     return {
@@ -607,7 +617,6 @@ export async function safeFetchHtml(value) {
         finalUrl: result.finalUrl,
     };
 }
-
 /* -------------------- IMAGE FETCH -------------------- */
 
 export async function safeFetchImage(value) {
@@ -619,11 +628,8 @@ export async function safeFetchImage(value) {
             "image/gif",
         ].join(","),
 
-        allowedContentTypes:
-            ALLOWED_IMAGE_CONTENT_TYPES,
-
+        allowedContentTypes: ALLOWED_IMAGE_CONTENT_TYPES,
         readBody: readLimitedImage,
-
         httpsOnly: true,
     });
 
@@ -641,21 +647,20 @@ export async function safeFetchJson(
     {
         allowedHostnames = null,
         maxRedirects = 0,
+        timeoutMs = FETCH_TIMEOUT,
     } = {}
 ) {
     const result = await safeFetchResource(value, {
         accept: "application/json",
 
-        allowedContentTypes:
-            ALLOWED_JSON_CONTENT_TYPES,
+        allowedContentTypes: ALLOWED_JSON_CONTENT_TYPES,
 
         readBody: readLimitedJson,
 
         httpsOnly: true,
-
         allowedHostnames,
-
         maxRedirects,
+        timeoutMs,
     });
 
     return {

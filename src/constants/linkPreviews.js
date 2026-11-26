@@ -9,8 +9,8 @@ export const MAX_URL_LENGTH = 2048;
 export const MAX_PREVIEWS_PER_MESSAGE = 1;
 
 export const ALLOWED_PROTOCOLS = new Set([
-    "http:",
-    "https:",
+  "http:",
+  "https:",
 ]);
 
 /* -------------------- NETWORK SETTINGS -------------------- */
@@ -19,13 +19,17 @@ export const MAX_REDIRECTS = 3;
 
 export const FETCH_TIMEOUT = 6000;
 
+export const METADATA_FETCH_TIMEOUT = 6000;
+
+export const YOUTUBE_FETCH_TIMEOUT = 3000;
+
 export const MAX_HTML_BYTES = 2 * 1024 * 1024;
 
 export const MAX_PENDING_REQUESTS = 10;
 
 export const ALLOWED_CONTENT_TYPES = new Set([
-    "text/html",
-    "application/xhtml+xml",
+  "text/html",
+  "application/xhtml+xml",
 ]);
 
 /* -------------------- METADATA SETTINGS -------------------- */
@@ -47,10 +51,10 @@ export const MAX_JSON_LD_DEPTH = 8;
 export const MAX_IMAGE_CANDIDATES = 30;
 
 export const PREVIEW_QUALITY = Object.freeze({
-    COMPLETE: "complete",
-    PARTIAL: "partial",
-    BASIC: "basic",
-    FAILED: "failed",
+  COMPLETE: "complete",
+  PARTIAL: "partial",
+  BASIC: "basic",
+  FAILED: "failed",
 });
 
 /* -------------------- CACHE SETTINGS -------------------- */
@@ -113,7 +117,7 @@ export const PREVIEW_RATE_WINDOW = 60;
 export const YOUTUBE_OEMBED_ENDPOINT = "https://www.youtube.com/oembed";
 export const YOUTUBE_VIDEO_ID_PATTERN = /^[a-zA-Z0-9_-]{11}$/;
 export const MAX_JSON_BYTES = 64 * 1024;
-export const ALLOWED_JSON_CONTENT_TYPES = new Set([ "application/json" ]);
+export const ALLOWED_JSON_CONTENT_TYPES = new Set(["application/json"]);
 
 export const YOUTUBE_HOSTNAMES = new Set([
   "youtube.com",

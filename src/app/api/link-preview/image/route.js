@@ -4,12 +4,9 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getCachedPreview } from "@/lib/server/linkPreviewCache";
 import { consumePreviewQuota } from "@/lib/server/linkPreviewRateLimit";
-import {
-    getPreviewImage,
-    ImagePreviewBusyError,
-    ImagePreviewUnavailableError,
-} from "@/lib/server/linkPreviewImage";
+import { getPreviewImage, ImagePreviewBusyError, ImagePreviewUnavailableError } from "@/lib/server/linkPreviewImage";
 import { extractUrls } from "@/utils/urlUtils";
+import { isPreviewAllowed } from "@/utils/previewUrlPolicy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,13 +46,10 @@ export async function GET(request) {
             return errorResponse(403);
         }
 
-        const messageId = new URL(
-            request.url
-        ).searchParams.get("messageId");
+        const messageId = new URL(request.url).searchParams.get("messageId");
 
         if (
-            !messageId ||
-            !UUID_PATTERN.test(messageId)
+            !messageId || !UUID_PATTERN.test(messageId)
         ) {
             return errorResponse(400);
         }
@@ -112,36 +106,39 @@ export async function GET(request) {
 
         /* -------------------- PREVIEW LOOKUP -------------------- */
 
-        const url = extractUrls(
-            message.content,
-            1
-        )[0];
+        /* Extract and validate the message URL */
 
-        if (!url) {
-            return errorResponse(404);
+        const [url] = extractUrls(message.content, 1);
+
+        if (!url || !isPreviewAllowed(url)) {
+            return new Response(null, {
+                status: 404,
+                headers: {
+                    "Cache-Control": "private, no-store",
+                },
+            });
         }
 
         const admin = createAdminClient();
-
-        const preview = await getCachedPreview(
-            admin,
-            url
-        );
+        const preview = await getCachedPreview(admin, url);
 
         if (
             !preview ||
             preview.status !== "success" ||
-            !preview.image_url
+            !preview.image_url ||
+            !isPreviewAllowed(preview.image_url)
         ) {
-            return errorResponse(404);
+            return new Response(null, {
+                status: 404,
+                headers: {
+                    "Cache-Control": "private, no-store",
+                },
+            });
         }
 
         /* -------------------- RATE LIMIT -------------------- */
 
-        const allowed = await consumePreviewQuota(
-            admin,
-            user.id
-        );
+        const allowed = await consumePreviewQuota(admin, user.id);
 
         if (!allowed) {
             return errorResponse(429, {
@@ -151,9 +148,7 @@ export async function GET(request) {
 
         /* -------------------- IMAGE PROCESSING -------------------- */
 
-        const buffer = await getPreviewImage(
-            preview.image_url
-        );
+        const buffer = await getPreviewImage(preview.image_url);
 
         return new Response(
             new Uint8Array(buffer),
@@ -164,13 +159,8 @@ export async function GET(request) {
                     ...RESPONSE_HEADERS,
 
                     "Content-Type": "image/webp",
-
-                    "Content-Length": String(
-                        buffer.byteLength
-                    ),
-
-                    "Content-Security-Policy":
-                        "default-src 'none'; sandbox",
+                    "Content-Length": String(buffer.byteLength),
+                    "Content-Security-Policy": "default-src 'none'; sandbox",
                 },
             }
         );

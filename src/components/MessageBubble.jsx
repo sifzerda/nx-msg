@@ -13,7 +13,9 @@ import {
   CheckCheck,
   Reply,
 } from "lucide-react";
-
+import {
+  isPreviewAllowed,
+} from "@/utils/previewUrlPolicy";
 import QuotedMessage from "./extras/QuotedMessage";
 import ReactionPicker from "./extras/ReactionPicker";
 import MessageReactions from "./MessageReactions";
@@ -71,11 +73,16 @@ function MessageBubble({
   // Extract the first URL for automatic link previews.
 
   const previewUrl = useMemo(() => {
-    if (!message.content) {
+    const [url] = extractUrls(
+      message.content || "",
+      1
+    );
+
+    if (!url || !isPreviewAllowed(url)) {
       return null;
     }
 
-    return extractUrls(message.content, 1)[0] ?? null;
+    return url;
   }, [message.content]);
 
   const selectedEmojis = useMemo(() => {

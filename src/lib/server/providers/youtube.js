@@ -5,12 +5,12 @@ import "server-only";
 import { safeFetchJson } from "../safeFetch";
 import { getCanonicalYouTubeVideoUrl } from "@/utils/youtubeUtils";
 import { normalizeUrl } from "@/utils/urlUtils";
-import { YOUTUBE_OEMBED_ENDPOINT, MAX_TITLE_LENGTH,MAX_SITE_NAME_LENGTH} from "@/constants/linkPreviews";
+import { YOUTUBE_OEMBED_ENDPOINT, MAX_TITLE_LENGTH, MAX_SITE_NAME_LENGTH } from "@/constants/linkPreviews";
 
 /* -------------------- PROVIDER SETTINGS -------------------- */
 
-const ALLOWED_PROVIDER_HOSTS = new Set([ "www.youtube.com" ]);
-const ALLOWED_THUMBNAIL_HOSTS = new Set([ "i.ytimg.com", "img.youtube.com" ]);
+const ALLOWED_PROVIDER_HOSTS = new Set(["www.youtube.com"]);
+const ALLOWED_THUMBNAIL_HOSTS = new Set(["i.ytimg.com", "img.youtube.com"]);
 
 /* -------------------- TEXT CLEANING -------------------- */
 
@@ -127,9 +127,8 @@ export function parseYouTubeMetadata(
 
 /* -------------------- PUBLIC PROVIDER -------------------- */
 
-export async function extractYouTubeMetadata(value) {
-  const videoUrl =
-    getCanonicalYouTubeVideoUrl(value);
+export async function extractYouTubeMetadata(value, { timeoutMs } = {}) {
+  const videoUrl = getCanonicalYouTubeVideoUrl(value);
 
   if (!videoUrl) {
     return null;
@@ -137,17 +136,11 @@ export async function extractYouTubeMetadata(value) {
 
   const endpoint = createOEmbedUrl(videoUrl);
 
-  const { data } = await safeFetchJson(
-    endpoint,
-    {
-      allowedHostnames: ALLOWED_PROVIDER_HOSTS,
+  const { data } = await safeFetchJson(endpoint, {
+    allowedHostnames: ALLOWED_PROVIDER_HOSTS,
+    maxRedirects: 0,
+    timeoutMs,
+  });
 
-      maxRedirects: 0,
-    }
-  );
-
-  return parseYouTubeMetadata(
-    data,
-    videoUrl
-  );
+  return parseYouTubeMetadata(data, videoUrl);
 }

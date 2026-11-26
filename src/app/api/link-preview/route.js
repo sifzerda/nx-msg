@@ -1,43 +1,24 @@
 // src/app/api/link-preview/route.js
 
 import { NextResponse } from "next/server";
-
-import {
-    createClient,
-} from "@/lib/supabase/server";
-
-import {
-    createAdminClient,
-} from "@/lib/supabase/admin";
-
+import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import {
     getCachedPreview,
     generateLinkPreview,
     serializePreview,
     PreviewBusyError,
 } from "@/lib/server/linkPreviewCache";
-
-import {
-    consumePreviewQuota,
-} from "@/lib/server/linkPreviewRateLimit";
-
-import {
-    extractUrls,
-} from "@/utils/urlUtils";
-
-import {
-    PREVIEW_RATE_WINDOW,
-} from "@/constants/linkPreviews";
+import { consumePreviewQuota } from "@/lib/server/linkPreviewRateLimit";
+import { extractUrls } from "@/utils/urlUtils";
+import { isPreviewAllowed } from "@/utils/previewUrlPolicy";
+import { PREVIEW_RATE_WINDOW } from "@/constants/linkPreviews";
 
 export const runtime = "nodejs";
-
 export const dynamic = "force-dynamic";
-
 export const maxDuration = 15;
 
-const UUID_PATTERN =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_REQUEST_BYTES = 1024;
 
 /* -------------------- RESPONSES -------------------- */
@@ -56,27 +37,21 @@ function json(data, status = 200, headers = {}) {
 /* -------------------- REQUEST VALIDATION -------------------- */
 
 function isSameOrigin(request) {
-    const origin =
-        request.headers.get("origin");
+    const origin = request.headers.get("origin");
 
     if (!origin) {
         return false;
     }
 
     try {
-        return (
-            new URL(origin).origin ===
-            new URL(request.url).origin
-        );
+        return (new URL(origin).origin === new URL(request.url).origin);
     } catch {
         return false;
     }
 }
 
 async function readRequestBody(request) {
-    const contentType = (
-        request.headers.get("content-type") || ""
-    )
+    const contentType = (request.headers.get("content-type") || "")
         .split(";")[0]
         .trim()
         .toLowerCase();
@@ -85,9 +60,7 @@ async function readRequestBody(request) {
         throw new Error("Unsupported content type");
     }
 
-    const declaredLength = Number(
-        request.headers.get("content-length")
-    );
+    const declaredLength = Number(request.headers.get("content-length"));
 
     if (declaredLength > MAX_REQUEST_BYTES) {
         throw new Error("Request body too large");
@@ -98,7 +71,6 @@ async function readRequestBody(request) {
     }
 
     const reader = request.body.getReader();
-
     const decoder = new TextDecoder();
 
     let totalBytes = 0;
@@ -106,17 +78,14 @@ async function readRequestBody(request) {
 
     try {
         while (true) {
-            const { done, value } =
-                await reader.read();
+            const { done, value } = await reader.read();
 
             if (done) break;
 
             totalBytes += value.byteLength;
 
             if (totalBytes > MAX_REQUEST_BYTES) {
-                throw new Error(
-                    "Request body too large"
-                );
+                throw new Error("Request body too large");
             }
 
             body += decoder.decode(value, {
@@ -249,11 +218,11 @@ export async function POST(request) {
 
         /* Extract the first URL from the stored message */
 
-        const [url] = extractUrls(
-            message.content
-        );
+        /* Extract and validate the first URL */
 
-        if (!url) {
+        const [url] = extractUrls(message.content, 1);
+
+        if (!url || !isPreviewAllowed(url)) {
             return json({
                 preview: null,
             });
@@ -262,11 +231,7 @@ export async function POST(request) {
         /* Use the service role only for cache operations */
 
         const admin = createAdminClient();
-
-        const cached = await getCachedPreview(
-            admin,
-            url
-        );
+        const cached = await getCachedPreview(admin, url);
 
         if (cached) {
             return json({
@@ -277,30 +242,19 @@ export async function POST(request) {
 
         /* Apply distributed rate limiting */
 
-        const allowed = await consumePreviewQuota(
-            admin,
-            user.id
-        );
+        const allowed = await consumePreviewQuota(admin, user.id);
 
         if (!allowed) {
             return json(
-                {
-                    error: "Too many link preview requests",
-                },
+                { error: "Too many link preview requests" },
                 429,
-                {
-                    "Retry-After": String(
-                        PREVIEW_RATE_WINDOW
-                    ),
-                }
+                { "Retry-After": String(PREVIEW_RATE_WINDOW) }
             );
         }
 
         /* Fetch and cache missing metadata */
 
-        const preview = await generateLinkPreview(
-            admin,
-            url,
+        const preview = await generateLinkPreview(admin, url,
             {
                 cacheChecked: true,
             }
@@ -326,15 +280,10 @@ export async function POST(request) {
         // Avoid logging message content, full URLs,
         // credentials or potentially sensitive query strings.
 
-        console.error(
-            "Link preview request failed"
-        );
+        console.error("Link preview request failed");
 
         return json(
-            {
-                error: "Unable to generate link preview",
-            },
-            500
+            { error: "Unable to generate link preview" }, 500
         );
     }
 }
