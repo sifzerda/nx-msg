@@ -42,37 +42,78 @@ const REQUEST_HEADERS = Object.freeze({
     "User-Agent": "MessengerLinkPreview/1.0",
     "Accept-Encoding": "identity",
 });
+/* -------------------- RESTRICTED IP RANGES -------------------- */
+
+const BLOCKED_IPV4_RANGES = [
+    "0.0.0.0/8",
+    "10.0.0.0/8",
+    "100.64.0.0/10",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "172.16.0.0/12",
+    "192.0.0.0/24",
+    "192.0.2.0/24",
+    "192.88.99.0/24",
+    "192.168.0.0/16",
+    "198.18.0.0/15",
+    "198.51.100.0/24",
+    "203.0.113.0/24",
+    "224.0.0.0/4",
+    "240.0.0.0/4",
+].map((range) => ipaddr.parseCIDR(range));
+
+const BLOCKED_IPV6_RANGES = [
+    "2001::/23",
+    "2001:db8::/32",
+    "2002::/16",
+    "3fff::/20",
+].map((range) => ipaddr.parseCIDR(range));
+
+const GLOBAL_IPV6_RANGE =
+    ipaddr.parseCIDR("2000::/3");
+
 
 /* -------------------- IP VALIDATION -------------------- */
 
 export function isPublicIp(value) {
+    if (
+        typeof value !== "string" ||
+        !isIP(value) ||
+        value.includes("%")
+    ) {
+        return false;
+    }
+
     try {
         let address = ipaddr.parse(value);
 
+        // Normalise IPv4-mapped IPv6 addresses.
         if (
-            address.kind() === "ipv6" &&
-            address.isIPv4MappedAddress()
+            address.kind() === "ipv6" && address.isIPv4MappedAddress()
         ) {
             address = address.toIPv4Address();
         }
 
+        // Reject special-purpose addresses.
         if (address.range() !== "unicast") {
             return false;
         }
 
-        // Only allow globally routed IPv6 address space.
-        if (address.kind() === "ipv6") {
-            if (
-                !address.match(
-                    ipaddr.parse("2000::"),
-                    3
-                )
-            ) {
-                return false;
-            }
+        if (address.kind() === "ipv4") {
+            return !BLOCKED_IPV4_RANGES.some(([network, prefix]) => address.match(network, prefix));
         }
 
-        return true;
+        if (address.kind() === "ipv6") {
+            const [network, prefix] = GLOBAL_IPV6_RANGE;
+
+            if (!address.match(network, prefix)) {
+                return false;
+            }
+
+            return !BLOCKED_IPV6_RANGES.some(([blockedNetwork, blockedPrefix]) => address.match(blockedNetwork, blockedPrefix));
+        }
+
+        return false;
     } catch {
         return false;
     }
@@ -80,7 +121,7 @@ export function isPublicIp(value) {
 
 /* -------------------- URL VALIDATION -------------------- */
 
-function validateTarget(value) {
+export function validateTarget(value) {
     const normalized = normalizeUrl(value);
 
     if (!normalized) {
@@ -572,7 +613,6 @@ export async function safeFetchHtml(value) {
 export async function safeFetchImage(value) {
     const result = await safeFetchResource(value, {
         accept: [
-            "image/avif",
             "image/webp",
             "image/png",
             "image/jpeg",
@@ -597,29 +637,29 @@ export async function safeFetchImage(value) {
 /* -------------------- JSON FETCH -------------------- */
 
 export async function safeFetchJson(
-  value,
-  {
-    allowedHostnames = null,
-    maxRedirects = 0,
-  } = {}
+    value,
+    {
+        allowedHostnames = null,
+        maxRedirects = 0,
+    } = {}
 ) {
-  const result = await safeFetchResource(value, {
-    accept: "application/json",
+    const result = await safeFetchResource(value, {
+        accept: "application/json",
 
-    allowedContentTypes:
-      ALLOWED_JSON_CONTENT_TYPES,
+        allowedContentTypes:
+            ALLOWED_JSON_CONTENT_TYPES,
 
-    readBody: readLimitedJson,
+        readBody: readLimitedJson,
 
-    httpsOnly: true,
+        httpsOnly: true,
 
-    allowedHostnames,
+        allowedHostnames,
 
-    maxRedirects,
-  });
+        maxRedirects,
+    });
 
-  return {
-    data: result.body,
-    finalUrl: result.finalUrl,
-  };
+    return {
+        data: result.body,
+        finalUrl: result.finalUrl,
+    };
 }

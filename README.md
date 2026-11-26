@@ -37,7 +37,7 @@ Basic social messaging app demo with dummy accounts.
 - GIFs and emojis
 - message dating
 - conversation search 
-- 
+- YouTube-specific metadata provider
 
 
 - posted URL previews	
@@ -50,6 +50,18 @@ Basic social messaging app demo with dummy accounts.
 -  Notification sounds
 -  Progressive Web App	
 - Password recovery
+
+1.3 Security:
+
+Image signature integration
+SSRF and restricted IP verification
+Malicious redirect tests
+Shared request deadline
+Sensitive URL filtering
+Authentication and membership verification
+Database permissions and RLS verification
+Final automated tests
+Normal preview and cache verification
 
 ## Badges
 
