@@ -3,14 +3,12 @@
 "use client";
 
 import { memo, useMemo } from "react";
-
-import {
-  ArrowUpRight,
-  Clock3,
-} from "lucide-react";
+import { ArrowUpRight, Clock3 } from "lucide-react";
 
 import { getMessagePreview } from "@/utils/messagePreview";
+
 import SearchAttachmentPreview from "./SearchAttachmentPreview";
+import SearchGifPreview from "./SearchGifPreview";
 
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-AU", {
   day: "numeric",
@@ -27,20 +25,30 @@ function escapeRegex(value) {
   );
 }
 
-function HighlightedText({ text = "", query = "" }) {
+const HighlightedText = memo(function HighlightedText({
+  text = "",
+  query = "",
+}) {
   const parts = useMemo(() => {
     const terms = [
       ...new Set(
         query
           .trim()
-          .split(/\s+/)
-          .map((term) => term.replace(/^["-]+|"+$/g, ""))
-          .filter((term) => term.length >= 2)
+          .match(/-?"[^"]+"|\S+/g)
+          ?.filter((term) => !term.startsWith("-"))
+          .filter((term) => term.toUpperCase() !== "OR")
+          .map((term) => term.replace(/^"+|"+$/g, ""))
+          .filter((term) => term.length >= 2) ?? []
       ),
     ].sort((a, b) => b.length - a.length);
 
     if (!terms.length) {
-      return [{ text, highlighted: false }];
+      return [
+        {
+          text,
+          highlighted: false,
+        },
+      ];
     }
 
     const pattern = new RegExp(
@@ -70,7 +78,7 @@ function HighlightedText({ text = "", query = "" }) {
       </span>
     )
   );
-}
+});
 
 function SearchResult({
   message,
@@ -93,11 +101,20 @@ function SearchResult({
     ? ""
     : DATE_FORMATTER.format(date);
 
-  const preview = getMessagePreview(message);
+  const content = message.content?.trim() || "";
 
-  const hasAttachment = Boolean(
-    message.attachment_path
-  );
+  const hasAttachment = Boolean(message.attachment_path);
+  const hasGif = Boolean(message.gif_id);
+  const hasMedia = hasAttachment || hasGif;
+
+  // Media messages display only their actual caption.
+  // Ordinary messages use the standard preview utility.
+
+  const preview = hasMedia
+    ? content
+    : getMessagePreview(message);
+
+  const showText = Boolean(preview);
 
   return (
     <button
@@ -114,7 +131,8 @@ function SearchResult({
       ].join(" ")}
     >
       {/* Sender and timestamp */}
-      <div className="mb-2 flex min-w-0 items-center gap-2">
+
+      <span className="mb-2 flex min-w-0 items-center gap-2">
         <span
           className={[
             "min-w-0 flex-1 truncate text-xs font-semibold",
@@ -132,19 +150,31 @@ function SearchResult({
         >
           {timestamp}
         </time>
-      </div>
+      </span>
 
-      {/* Message text */}
-      {(message.content?.trim() || !hasAttachment) && (
-        <p className="line-clamp-4 whitespace-pre-wrap break-words text-sm text-gray-200 [overflow-wrap:anywhere]">
+      {/* Message text or caption */}
+
+      {showText && (
+        <span className="block line-clamp-4 whitespace-pre-wrap wrap-break-word text-sm text-gray-200 [overflow-wrap:anywhere]">
           <HighlightedText
             text={preview}
             query={query}
           />
-        </p>
+        </span>
       )}
 
-      {/* Attachment */}
+      {/* GIF preview */}
+
+      {hasGif && (
+        <SearchGifPreview
+          message={message}
+          query={query}
+          HighlightedText={HighlightedText}
+        />
+      )}
+
+      {/* Image or file attachment */}
+
       {hasAttachment && (
         <SearchAttachmentPreview
           message={message}
@@ -154,7 +184,8 @@ function SearchResult({
       )}
 
       {/* Navigation */}
-      <div className="mt-3 flex items-center gap-1.5">
+
+      <span className="mt-3 flex items-center gap-1.5">
         {canJump ? (
           <>
             <ArrowUpRight
@@ -178,7 +209,7 @@ function SearchResult({
             </span>
           </>
         )}
-      </div>
+      </span>
     </button>
   );
 }

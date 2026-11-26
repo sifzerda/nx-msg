@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { uploadAttachment } from "@/lib/extras/attachments";
 import { getConversations, getMessages, sendMessage, markChatRead } from "@/lib/messages";
+import { isValidGifId } from "@/lib/gifs";
 
 let generation = 0;
 let chatRequestId = 0;
@@ -279,77 +280,121 @@ const useChatStore = create((set, get) => ({
     return entry.promise;
   },
 
-  send: async (content, attachmentFile = null, userId = null) => {
-    const message = content.trim();
-    const { activeChatId, sending, replyTo } = get();
+send: async (
+  content,
+  attachmentFile = null,
+  userId = null,
+  gifId = null
+) => {
+  const message = content.trim();
 
-    if (
-      !activeChatId || sending || (!message && !attachmentFile)
-    ) {
-      return false;
-    }
+  const {
+    activeChatId,
+    sending,
+    replyTo,
+  } = get();
 
-    if (attachmentFile && !userId) {
-      set({ error: "Missing user information" });
-      return false;
-    }
+  if (
+    !activeChatId ||
+    sending ||
+    (!message && !attachmentFile && !gifId)
+  ) {
+    return false;
+  }
 
-    const currentGeneration = generation;
-    const replyToId = replyTo?.conversation_id === activeChatId ? replyTo.id : null;
+  if (message.length > 5000) {
+    set({ error: "Message is too long" });
+    return false;
+  }
 
+  if (attachmentFile && gifId) {
     set({
-      sending: true,
-      error: null,
+      error: "Cannot send a GIF and a file together",
     });
 
-    try {
-      const attachment = attachmentFile
-        ? await uploadAttachment({
+    return false;
+  }
+
+  if (gifId !== null && !isValidGifId(gifId)) {
+    set({ error: "Invalid GIF ID" });
+    return false;
+  }
+
+  if (attachmentFile && !userId) {
+    set({ error: "Missing user information" });
+    return false;
+  }
+
+  const currentGeneration = generation;
+
+  const replyToId =
+    replyTo?.conversation_id === activeChatId
+      ? replyTo.id
+      : null;
+
+  set({
+    sending: true,
+    error: null,
+  });
+
+  try {
+    const attachment = attachmentFile
+      ? await uploadAttachment({
           conversationId: activeChatId,
           userId,
           file: attachmentFile,
         })
-        : null;
+      : null;
 
-      if (generation !== currentGeneration) {
-        return false;
-      }
-
-      const result = await sendMessage(activeChatId, message, replyToId, attachment);
-
-      if (generation !== currentGeneration) {
-        return false;
-      }
-
-      get().receiveMessage(result);
-
-      const current = get();
-
-      if (
-        current.activeChatId === activeChatId && current.replyTo === replyTo
-      ) {
-        set({ replyTo: null });
-      }
-
-      void get().fetchConversations();
-
-      return true;
-    } catch (error) {
-      if (
-        generation === currentGeneration && get().activeChatId === activeChatId
-      ) {
-        set({
-          error: error.message || "Failed to send message",
-        });
-      }
-
+    if (generation !== currentGeneration) {
       return false;
-    } finally {
-      if (generation === currentGeneration) {
-        set({ sending: false });
-      }
     }
-  },
+
+    const result = await sendMessage(
+      activeChatId,
+      message,
+      replyToId,
+      attachment,
+      gifId
+    );
+
+    if (generation !== currentGeneration) {
+      return false;
+    }
+
+    get().receiveMessage(result);
+
+    const current = get();
+
+    if (
+      current.activeChatId === activeChatId &&
+      current.replyTo === replyTo
+    ) {
+      set({ replyTo: null });
+    }
+
+    void get().fetchConversations();
+
+    return true;
+  } catch (error) {
+    if (
+      generation === currentGeneration &&
+      get().activeChatId === activeChatId
+    ) {
+      set({
+        error:
+          error.message ||
+          "Failed to send message",
+      });
+    }
+
+    return false;
+  } finally {
+    if (generation === currentGeneration) {
+      set({ sending: false });
+    }
+  }
+},
 
   closeChat: (chatId) => {
     if (get().activeChatId !== chatId) return;

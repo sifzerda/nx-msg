@@ -2,28 +2,34 @@
 
 import { createClient } from "@/lib/supabase/client";
 
+import {
+  formatExportDate,
+  safeExportFilename,
+  formatExportMessage,
+  formatExportReply,
+} from "@/utils/chatExportFormat";
+
 const PAGE_SIZE = 500;
+const PROFILE_BATCH_SIZE = 100;
 
-function formatDate(value) {
-  return new Date(value).toLocaleString("en-AU", {
-    dateStyle: "medium",
-    timeStyle: "medium",
-  });
-}
+const MESSAGE_COLUMNS = [
+  "id",
+  "sender_id",
+  "content",
+  "created_at",
+  "reply_to_id",
+  "gif_id",
+  "attachment_path",
+  "attachment_type",
+  "attachment_name",
+  "attachment_size",
+  "attachment_mime_type",
+].join(", ");
 
-function safeFilename(value) {
-  return String(value || "conversation")
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
-    .slice(0, 80);
-}
-
-export async function exportChatLog(conversation) {
-  if (!conversation?.id) {
-    throw new Error("No conversation selected");
-  }
-
-  const supabase = createClient();
-
+async function verifyMembership(
+  supabase,
+  conversationId
+) {
   const {
     data: { user },
     error: authError,
@@ -33,52 +39,106 @@ export async function exportChatLog(conversation) {
     throw new Error("You must be logged in");
   }
 
-  // Verify membership before exporting.
-  const { data: membership, error: membershipError } =
-    await supabase
-      .from("conversation_members")
-      .select("user_id")
-      .eq("conversation_id", conversation.id)
-      .eq("user_id", user.id)
-      .maybeSingle();
+  const {
+    data: membership,
+    error,
+  } = await supabase
+    .from("conversation_members")
+    .select("user_id")
+    .eq("conversation_id", conversationId)
+    .eq("user_id", user.id)
+    .maybeSingle();
 
-  if (membershipError) throw membershipError;
+  if (error) throw error;
 
   if (!membership) {
-    throw new Error("You are not a member of this conversation");
+    throw new Error(
+      "You are not a member of this conversation"
+    );
   }
 
-  // Retrieve all messages, not just the latest 100.
+  return user;
+}
+
+async function getExportMessages(
+  supabase,
+  conversationId,
+  exportedAt
+) {
   const messages = [];
-  let offset = 0;
+
+  let cursor = null;
 
   while (true) {
-    const { data, error } = await supabase
+    let request = supabase
       .from("messages")
-      .select("id, sender_id, content, created_at")
-      .eq("conversation_id", conversation.id)
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(offset, offset + PAGE_SIZE - 1);
+      .select(MESSAGE_COLUMNS)
+      .eq("conversation_id", conversationId)
+      .lte("created_at", exportedAt)
+      .order("created_at", {
+        ascending: true,
+      })
+      .order("id", {
+        ascending: true,
+      })
+      .limit(PAGE_SIZE);
+
+    // Keyset pagination.
+    if (cursor) {
+      request = request.or(
+        [
+          `created_at.gt.${cursor.created_at}`,
+          `and(created_at.eq.${cursor.created_at},id.gt.${cursor.id})`,
+        ].join(",")
+      );
+    }
+
+    const { data, error } = await request;
 
     if (error) throw error;
 
-    messages.push(...(data ?? []));
+    const rows = data ?? [];
 
-    if (!data || data.length < PAGE_SIZE) break;
+    if (!rows.length) break;
 
-    offset += data.length;
+    messages.push(...rows);
+
+    const lastMessage = rows[rows.length - 1];
+
+    cursor = {
+      created_at: lastMessage.created_at,
+      id: lastMessage.id,
+    };
+
+    if (rows.length < PAGE_SIZE) break;
   }
 
-  // Load sender profiles.
+  return messages;
+}
+
+async function getExportProfiles(
+  supabase,
+  messages
+) {
   const senderIds = [
-    ...new Set(messages.map((m) => m.sender_id).filter(Boolean)),
+    ...new Set(
+      messages
+        .map((message) => message.sender_id)
+        .filter(Boolean)
+    ),
   ];
 
   const profileMap = new Map();
 
-  for (let i = 0; i < senderIds.length; i += PAGE_SIZE) {
-    const ids = senderIds.slice(i, i + PAGE_SIZE);
+  for (
+    let index = 0;
+    index < senderIds.length;
+    index += PROFILE_BATCH_SIZE
+  ) {
+    const ids = senderIds.slice(
+      index,
+      index + PROFILE_BATCH_SIZE
+    );
 
     const { data, error } = await supabase
       .from("profiles")
@@ -90,26 +150,72 @@ export async function exportChatLog(conversation) {
     for (const profile of data ?? []) {
       profileMap.set(
         profile.id,
-        profile.display_name ||
-          profile.username ||
+        profile.display_name?.trim() ||
+          profile.username?.trim() ||
           profile.id
       );
     }
   }
 
-  const chatName =
-    conversation.name ||
-    conversation.display_name ||
-    conversation.username ||
-    "Conversation";
+  return profileMap;
+}
 
-  const lines = [
+function getConversationName(conversation) {
+  return (
+    conversation.name?.trim() ||
+    conversation.display_name?.trim() ||
+    conversation.username?.trim() ||
+    "Conversation"
+  );
+}
+
+function buildExportHeader({
+  chatName,
+  conversation,
+  exportedAt,
+  messageCount,
+}) {
+  return [
     `Chat: ${chatName}`,
-    `Exported: ${formatDate(new Date())}`,
-    `Total messages: ${messages.length}`,
+    `Type: ${
+      conversation.type === "group"
+        ? "Group conversation"
+        : "Private conversation"
+    }`,
+    `Exported: ${formatExportDate(exportedAt)}`,
+    `Total messages: ${messageCount}`,
+    "",
+    "Media attachments are represented by metadata.",
+    "Image, file and GIF contents are not embedded.",
     "",
     "----------------------------------------",
     "",
+  ].join("\r\n");
+}
+
+function buildExportParts({
+  conversation,
+  chatName,
+  exportedAt,
+  messages,
+  profileMap,
+}) {
+  const messageMap = new Map(
+    messages.map((message) => [
+      message.id,
+      message,
+    ])
+  );
+
+  const parts = [
+    "\uFEFF",
+    buildExportHeader({
+      conversation,
+      chatName,
+      exportedAt,
+      messageCount: messages.length,
+    }),
+    "\r\n",
   ];
 
   for (const message of messages) {
@@ -118,30 +224,103 @@ export async function exportChatLog(conversation) {
       message.sender_id ||
       "Unknown user";
 
-    lines.push(
-      `[${formatDate(message.created_at)}] ${sender}:`,
-      message.content ?? "",
-      ""
+    const timestamp = formatExportDate(
+      message.created_at
+    );
+
+    parts.push(
+      `[${timestamp}] ${sender}:\r\n`
+    );
+
+    const reply = formatExportReply(
+      message,
+      messageMap,
+      profileMap
+    );
+
+    if (reply) {
+      parts.push(reply, "\r\n");
+    }
+
+    parts.push(
+      formatExportMessage(message),
+      "\r\n\r\n"
     );
   }
 
-  const blob = new Blob(["\uFEFF", lines.join("\r\n")], {
+  return parts;
+}
+
+function downloadExport(parts, filename) {
+  const blob = new Blob(parts, {
     type: "text/plain;charset=utf-8",
   });
 
   const url = URL.createObjectURL(blob);
+
   const link = document.createElement("a");
 
   link.href = url;
-  link.download =
-    `${safeFilename(chatName)}-${new Date().toISOString().slice(0, 10)}.txt`;
+  link.download = filename;
 
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
+  try {
+    document.body.appendChild(link);
+    link.click();
+  } finally {
+    link.remove();
 
-  // Release the temporary browser URL.
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 1000);
+  }
+}
+
+export async function exportChatLog(conversation) {
+  if (!conversation?.id) {
+    throw new Error(
+      "No conversation selected"
+    );
+  }
+
+  const supabase = createClient();
+
+  await verifyMembership(
+    supabase,
+    conversation.id
+  );
+
+  // Exclude newly timestamped messages that arrive
+  // after the export starts.
+  const exportedAt = new Date().toISOString();
+
+  const messages = await getExportMessages(
+    supabase,
+    conversation.id,
+    exportedAt
+  );
+
+  const profileMap = await getExportProfiles(
+    supabase,
+    messages
+  );
+
+  const chatName = getConversationName(
+    conversation
+  );
+
+  const parts = buildExportParts({
+    conversation,
+    chatName,
+    exportedAt,
+    messages,
+    profileMap,
+  });
+
+  const filename =
+    `${safeExportFilename(chatName)}-` +
+    `${exportedAt.slice(0, 10)}.txt`;
+
+  downloadExport(parts, filename);
 
   return messages.length;
 }

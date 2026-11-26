@@ -1,9 +1,23 @@
 // src/lib/messages.js
 
 import { createClient } from "@/lib/supabase/client";
+import { isValidGifId } from "@/lib/gifs";
 
 const supabase = createClient();
-const MESSAGE_COLUMNS = "id, conversation_id, sender_id, content, created_at, reply_to_id, attachment_path, attachment_type, attachment_name, attachment_size, attachment_mime_type";
+const MESSAGE_COLUMNS = [
+  "id",
+  "conversation_id",
+  "sender_id",
+  "content",
+  "created_at",
+  "reply_to_id",
+  "attachment_path",
+  "attachment_type",
+  "attachment_name",
+  "attachment_size",
+  "attachment_mime_type",
+  "gif_id",
+].join(", ");
 const MESSAGE_LIMIT = 100;
 
 export async function startChat(contactId) {
@@ -62,18 +76,23 @@ export async function getMessages(conversationId) {
   return (data ?? []).reverse();
 }
 
-export async function sendMessage(
-  conversationId,
-  content,
-  replyToId = null,
-  attachment = null
-) {
+export async function sendMessage(conversationId, content, replyToId = null, attachment = null, gifId = null) {
   const message = content.trim();
 
-  if (
-    message.length > 5000 || (!message && !attachment)
-  ) {
-    throw new Error("Invalid message content");
+  if (message.length > 5000) {
+    throw new Error("Message is too long");
+  }
+
+  if (!message && !attachment && !gifId) {
+    throw new Error("Message cannot be empty");
+  }
+
+  if (attachment && gifId) {
+    throw new Error("A message cannot contain both a GIF and an attachment");
+  }
+
+  if (gifId !== null && !isValidGifId(gifId)) {
+    throw new Error("Invalid GIF ID");
   }
 
   const { data, error } = await supabase
@@ -83,6 +102,7 @@ export async function sendMessage(
       reply_id: replyToId,
       file_path: attachment?.path ?? null,
       file_name: attachment?.name ?? null,
+      selected_gif_id: gifId,
     })
     .single();
 

@@ -8,6 +8,7 @@ import { clearAttachmentCache } from "@/lib/extras/attachments";
 import useChatStore from "@/store/useChatStore";
 import useContactStore from "@/store/useContactStore";
 import usePresenceStore from "@/store/usePresenceStore";
+import { clearLinkPreviewCache } from "@/lib/linkPreviews";
 
 const supabase = createClient();
 
@@ -81,6 +82,7 @@ export async function logout() {
 
   clearMessageProfileCache();
   clearAttachmentCache();
+  clearLinkPreviewCache();
 
   return {
     success: true,
