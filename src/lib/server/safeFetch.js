@@ -4,21 +4,18 @@ import "server-only";
 
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-
 import ipaddr from "ipaddr.js";
-
-import {
-    Agent,
-    fetch as undiciFetch,
-} from "undici";
-
+import { Agent, fetch as undiciFetch } from "undici";
 import { normalizeUrl } from "@/utils/urlUtils";
-
 import {
     MAX_REDIRECTS,
     FETCH_TIMEOUT,
     MAX_HTML_BYTES,
+    MAX_IMAGE_BYTES,
+    MAX_JSON_BYTES,
     ALLOWED_CONTENT_TYPES,
+    ALLOWED_IMAGE_CONTENT_TYPES,
+    ALLOWED_JSON_CONTENT_TYPES,
 } from "@/constants/linkPreviews";
 
 const REDIRECT_STATUSES = new Set([
@@ -41,11 +38,10 @@ const BLOCKED_HOST_SUFFIXES = [
     ".arpa",
 ];
 
-const REQUEST_HEADERS = {
+const REQUEST_HEADERS = Object.freeze({
     "User-Agent": "MessengerLinkPreview/1.0",
-    Accept: "text/html,application/xhtml+xml",
     "Accept-Encoding": "identity",
-};
+});
 
 /* -------------------- IP VALIDATION -------------------- */
 
@@ -236,7 +232,7 @@ function createPinnedAgent(hostname, address) {
 
 /* -------------------- RESPONSE VALIDATION -------------------- */
 
-function validateResponse(response) {
+function validateResponse(response, allowedContentTypes) {
     if (!response.ok) {
         throw new Error(
             `Website returned HTTP ${response.status}`
@@ -250,9 +246,11 @@ function validateResponse(response) {
         .trim()
         .toLowerCase();
 
-    if (!ALLOWED_CONTENT_TYPES.has(contentType)) {
+    if (!allowedContentTypes.has(contentType)) {
         throw new Error("Unsupported content type");
     }
+
+    return contentType;
 }
 
 /* -------------------- LIMITED BODY READER -------------------- */
@@ -346,13 +344,101 @@ async function readLimitedBody(response) {
     }
 }
 
-/* -------------------- SAFE FETCH -------------------- */
+/* -------------------- LIMITED BINARY READER -------------------- */
 
-export async function safeFetchHtml(value) {
+async function readLimitedBuffer(response, maxBytes) {
+    if (!response.body) {
+        throw new Error("Empty response");
+    }
+
+    const contentLength = Number(
+        response.headers.get("content-length")
+    );
+
+    if (
+        Number.isFinite(contentLength) &&
+        contentLength > maxBytes
+    ) {
+        throw new Error("Response exceeds size limit");
+    }
+
+    const reader = response.body.getReader();
+
+    const chunks = [];
+
+    let totalBytes = 0;
+
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+
+            if (done) break;
+
+            totalBytes += value.byteLength;
+
+            if (totalBytes > maxBytes) {
+                throw new Error("Response exceeds size limit");
+            }
+
+            chunks.push(Buffer.from(value));
+        }
+
+        if (!totalBytes) {
+            throw new Error("Empty response");
+        }
+
+        return Buffer.concat(chunks, totalBytes);
+    } finally {
+        try {
+            await reader.cancel();
+        } catch {
+            // Stream may already be closed.
+        }
+
+        reader.releaseLock();
+    }
+}
+
+/* -------------------- LIMITED IMAGE READER -------------------- */
+
+function readLimitedImage(response) {
+    return readLimitedBuffer(
+        response,
+        MAX_IMAGE_BYTES
+    );
+}
+
+/* -------------------- LIMITED JSON READER -------------------- */
+
+async function readLimitedJson(response) {
+    const buffer = await readLimitedBuffer(response, MAX_JSON_BYTES);
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+
+    try {
+        return JSON.parse(decoder.decode(buffer));
+    } catch {
+        throw new Error("Invalid JSON response");
+    }
+}
+/* -------------------- SHARED SAFE FETCH -------------------- */
+
+async function safeFetchResource(
+    value,
+    {
+        accept,
+        allowedContentTypes,
+        readBody,
+        httpsOnly = false,
+        allowedHostnames = null,
+        maxRedirects = MAX_REDIRECTS,
+    }
+) {
     const controller = new AbortController();
 
     const timeout = setTimeout(() => {
-        controller.abort(new Error("Website request timed out"));
+        controller.abort(
+            new Error("Website request timed out")
+        );
     }, FETCH_TIMEOUT);
 
     let currentUrl = value;
@@ -361,27 +447,36 @@ export async function safeFetchHtml(value) {
         for (
             let redirectCount = 0;
             redirectCount <= MAX_REDIRECTS;
-            redirectCount += 1
+            redirectCount++
         ) {
-            const { url, hostname } =
-                validateTarget(currentUrl);
+            const { url, hostname } = validateTarget(currentUrl);
 
-            const address = await resolvePublicAddress(
-                hostname,
-                controller.signal
-            );
+            if (
+                allowedHostnames && !allowedHostnames.has(hostname)
+            ) {
+                throw new Error("Unexpected provider hostname");
+            }
 
-            const agent = createPinnedAgent(
-                hostname,
-                address
-            );
+            if (
+                httpsOnly && url.protocol !== "https:"
+            ) {
+                throw new Error("HTTPS required");
+            }
+
+            const address = await resolvePublicAddress(hostname, controller.signal);
+            const agent = createPinnedAgent(hostname, address);
 
             let response;
 
             try {
                 response = await undiciFetch(url.href, {
                     method: "GET",
-                    headers: REQUEST_HEADERS,
+
+                    headers: {
+                        ...REQUEST_HEADERS,
+                        Accept: accept,
+                    },
+
                     redirect: "manual",
                     dispatcher: agent,
                     signal: controller.signal,
@@ -406,9 +501,9 @@ export async function safeFetchHtml(value) {
                         url
                     );
 
-                    // Prevent HTTPS-to-HTTP downgrades.
                     if (
-                        url.protocol === "https:" &&
+                        (httpsOnly ||
+                            url.protocol === "https:") &&
                         destination.protocol !== "https:"
                     ) {
                         throw new Error(
@@ -418,19 +513,19 @@ export async function safeFetchHtml(value) {
 
                     currentUrl = destination.href;
 
-                    // The next iteration validates the
-                    // destination and resolves its DNS again.
                     continue;
                 }
 
-                validateResponse(response);
-
-                const html = await readLimitedBody(
-                    response
+                const contentType = validateResponse(
+                    response,
+                    allowedContentTypes
                 );
 
+                const body = await readBody(response);
+
                 return {
-                    html,
+                    body,
+                    contentType,
                     finalUrl: url.href,
                 };
             } finally {
@@ -453,4 +548,78 @@ export async function safeFetchHtml(value) {
     } finally {
         clearTimeout(timeout);
     }
+}
+
+/* -------------------- HTML FETCH -------------------- */
+
+export async function safeFetchHtml(value) {
+    const result = await safeFetchResource(value, {
+        accept: "text/html,application/xhtml+xml",
+
+        allowedContentTypes: ALLOWED_CONTENT_TYPES,
+
+        readBody: readLimitedBody,
+    });
+
+    return {
+        html: result.body,
+        finalUrl: result.finalUrl,
+    };
+}
+
+/* -------------------- IMAGE FETCH -------------------- */
+
+export async function safeFetchImage(value) {
+    const result = await safeFetchResource(value, {
+        accept: [
+            "image/avif",
+            "image/webp",
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+        ].join(","),
+
+        allowedContentTypes:
+            ALLOWED_IMAGE_CONTENT_TYPES,
+
+        readBody: readLimitedImage,
+
+        httpsOnly: true,
+    });
+
+    return {
+        buffer: result.body,
+        contentType: result.contentType,
+        finalUrl: result.finalUrl,
+    };
+}
+
+/* -------------------- JSON FETCH -------------------- */
+
+export async function safeFetchJson(
+  value,
+  {
+    allowedHostnames = null,
+    maxRedirects = 0,
+  } = {}
+) {
+  const result = await safeFetchResource(value, {
+    accept: "application/json",
+
+    allowedContentTypes:
+      ALLOWED_JSON_CONTENT_TYPES,
+
+    readBody: readLimitedJson,
+
+    httpsOnly: true,
+
+    allowedHostnames,
+
+    maxRedirects,
+  });
+
+  return {
+    data: result.body,
+    finalUrl: result.finalUrl,
+  };
 }

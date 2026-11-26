@@ -5,7 +5,7 @@
 // logout clears app state
 
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import Header from "../Header";
+import Header from "../components/Header";
 
 const mockPush = jest.fn();
 const mockRefresh = jest.fn();

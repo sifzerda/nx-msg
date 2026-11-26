@@ -2,15 +2,25 @@
 
 import "server-only";
 
-import { extractMetadata } from "./extractMetadata";
+import {
+  extractMetadata,
+  getMetadataQuality,
+} from "./extractMetadata";
 
 import { normalizeUrl } from "@/utils/urlUtils";
 
 import {
   SUCCESS_CACHE_TTL,
+  PARTIAL_CACHE_TTL,
+  BASIC_CACHE_TTL,
   FAILED_CACHE_TTL,
+  METADATA_MEMORY_CACHE_TTL,
+  MAX_METADATA_CACHE_ENTRIES,
   MAX_PENDING_REQUESTS,
+  PREVIEW_QUALITY,
 } from "@/constants/linkPreviews";
+
+/* -------------------- CONSTANTS -------------------- */
 
 const CACHE_COLUMNS = [
   "url",
@@ -24,7 +34,27 @@ const CACHE_COLUMNS = [
   "expires_at",
 ].join(",");
 
+const QUALITY_TTL = Object.freeze({
+  [PREVIEW_QUALITY.COMPLETE]:
+    SUCCESS_CACHE_TTL,
+
+  [PREVIEW_QUALITY.PARTIAL]:
+    PARTIAL_CACHE_TTL,
+
+  [PREVIEW_QUALITY.BASIC]:
+    BASIC_CACHE_TTL,
+
+  [PREVIEW_QUALITY.FAILED]:
+    FAILED_CACHE_TTL,
+});
+
+/* -------------------- MEMORY STATE -------------------- */
+
+const memoryCache = new Map();
+
 const pendingRequests = new Map();
+
+const pendingCacheLookups = new Map();
 
 /* -------------------- ERRORS -------------------- */
 
@@ -36,18 +66,89 @@ export class PreviewBusyError extends Error {
   }
 }
 
-/* -------------------- CACHE LOOKUP -------------------- */
+/* -------------------- MEMORY CACHE -------------------- */
 
-export async function getCachedPreview(
-  admin,
-  value
-) {
-  const url = normalizeUrl(value);
+function pruneMemoryCache() {
+  const now = Date.now();
 
-  if (!url) {
-    throw new Error("Invalid preview URL");
+  for (const [key, entry] of memoryCache) {
+    if (entry.expiresAt <= now) {
+      memoryCache.delete(key);
+    }
   }
 
+  while (
+    memoryCache.size >
+    MAX_METADATA_CACHE_ENTRIES
+  ) {
+    const oldestKey =
+      memoryCache.keys().next().value;
+
+    if (oldestKey === undefined) {
+      break;
+    }
+
+    memoryCache.delete(oldestKey);
+  }
+}
+
+function getMemoryPreview(url) {
+  const entry = memoryCache.get(url);
+
+  if (!entry) {
+    return undefined;
+  }
+
+  if (entry.expiresAt <= Date.now()) {
+    memoryCache.delete(url);
+
+    return undefined;
+  }
+
+  // Refresh LRU order.
+
+  memoryCache.delete(url);
+  memoryCache.set(url, entry);
+
+  return entry.preview;
+}
+
+function setMemoryPreview(url, preview) {
+  if (!preview) {
+    return;
+  }
+
+  const now = Date.now();
+
+  const persistentExpiry = Date.parse(
+    preview.expires_at
+  );
+
+  if (
+    !Number.isFinite(persistentExpiry) ||
+    persistentExpiry <= now
+  ) {
+    return;
+  }
+
+  const expiresAt = Math.min(
+    persistentExpiry,
+    now + METADATA_MEMORY_CACHE_TTL
+  );
+
+  memoryCache.delete(url);
+
+  memoryCache.set(url, {
+    preview,
+    expiresAt,
+  });
+
+  pruneMemoryCache();
+}
+
+/* -------------------- DATABASE LOOKUP -------------------- */
+
+async function getDatabasePreview(admin, url) {
   const { data, error } = await admin
     .from("link_previews")
     .select(CACHE_COLUMNS)
@@ -64,15 +165,68 @@ export async function getCachedPreview(
     );
   }
 
+  if (data) {
+    setMemoryPreview(url, data);
+  }
+
   return data ?? null;
+}
+
+/* -------------------- PUBLIC CACHE LOOKUP -------------------- */
+
+export async function getCachedPreview(
+  admin,
+  value
+) {
+  const url = normalizeUrl(value);
+
+  if (!url) {
+    throw new Error("Invalid preview URL");
+  }
+
+  const memoryPreview =
+    getMemoryPreview(url);
+
+  if (memoryPreview !== undefined) {
+    return memoryPreview;
+  }
+
+  const existingLookup =
+    pendingCacheLookups.get(url);
+
+  if (existingLookup) {
+    return existingLookup;
+  }
+
+  // Bound the number of simultaneous database
+  // cache lookups tracked in memory.
+
+  if (
+    pendingCacheLookups.size >=
+    MAX_PENDING_REQUESTS * 3
+  ) {
+    throw new PreviewBusyError();
+  }
+
+  const lookup = getDatabasePreview(
+    admin,
+    url
+  ).finally(() => {
+    if (
+      pendingCacheLookups.get(url) === lookup
+    ) {
+      pendingCacheLookups.delete(url);
+    }
+  });
+
+  pendingCacheLookups.set(url, lookup);
+
+  return lookup;
 }
 
 /* -------------------- CACHE WRITE -------------------- */
 
-async function savePreview(
-  admin,
-  preview
-) {
+async function savePreview(admin, preview) {
   const { error } = await admin
     .from("link_previews")
     .upsert(preview, {
@@ -84,6 +238,11 @@ async function savePreview(
       "Unable to cache link preview"
     );
   }
+
+  setMemoryPreview(
+    preview.url,
+    preview
+  );
 
   return preview;
 }
@@ -97,10 +256,14 @@ function createCacheRecord(
 ) {
   const fetchedAt = Date.now();
 
+  const quality =
+    status === "failed"
+      ? PREVIEW_QUALITY.FAILED
+      : getMetadataQuality(metadata);
+
   const ttl =
-    status === "success"
-      ? SUCCESS_CACHE_TTL
-      : FAILED_CACHE_TTL;
+    QUALITY_TTL[quality] ??
+    FAILED_CACHE_TTL;
 
   return {
     url,
@@ -134,38 +297,54 @@ function createCacheRecord(
 
 async function fetchAndCachePreview(
   admin,
-  url
+  url,
+  cacheChecked
 ) {
-  // Recheck the persistent cache in case another
-  // request populated it in the meantime.
+  if (!cacheChecked) {
+    const cached = await getCachedPreview(
+      admin,
+      url
+    );
 
-  const cached = await getCachedPreview(
-    admin,
-    url
-  );
+    if (cached) {
+      return cached;
+    }
+  }
 
-  if (cached) {
-    return cached;
+  // Another request may have populated the
+  // memory cache since the initial lookup.
+
+  const memoryPreview =
+    getMemoryPreview(url);
+
+  if (memoryPreview !== undefined) {
+    return memoryPreview;
   }
 
   let metadata = null;
+
   let status = "success";
 
-try {
-  metadata = await extractMetadata(url);
-} catch (error) {
-  status = "failed";
+  try {
+    metadata = await extractMetadata(url);
+  } catch (error) {
+    status = "failed";
 
-  if (process.env.NODE_ENV === "development") {
-    console.error("[LinkPreview] Extraction failed", {
-      hostname: new URL(url).hostname,
-      name: error.name,
-      message: error.message,
-      cause: error.cause?.message,
-      code: error.cause?.code ?? error.code,
-    });
+    if (
+      process.env.NODE_ENV === "development"
+    ) {
+      console.error(
+        "[LinkPreview] Extraction failed",
+        {
+          hostname: new URL(url).hostname,
+          name: error.name,
+          code:
+            error.cause?.code ??
+            error.code,
+        }
+      );
+    }
   }
-}
 
   const preview = createCacheRecord(
     url,
@@ -173,14 +352,20 @@ try {
     status
   );
 
-  return savePreview(admin, preview);
+  return savePreview(
+    admin,
+    preview
+  );
 }
 
 /* -------------------- REQUEST DEDUPLICATION -------------------- */
 
 export function generateLinkPreview(
   admin,
-  value
+  value,
+  {
+    cacheChecked = false,
+  } = {}
 ) {
   const url = normalizeUrl(value);
 
@@ -188,6 +373,13 @@ export function generateLinkPreview(
     return Promise.reject(
       new Error("Invalid preview URL")
     );
+  }
+
+  const memoryPreview =
+    getMemoryPreview(url);
+
+  if (memoryPreview !== undefined) {
+    return Promise.resolve(memoryPreview);
   }
 
   const existingRequest =
@@ -208,7 +400,8 @@ export function generateLinkPreview(
 
   const request = fetchAndCachePreview(
     admin,
-    url
+    url,
+    cacheChecked
   ).finally(() => {
     if (
       pendingRequests.get(url) === request
@@ -222,19 +415,49 @@ export function generateLinkPreview(
   return request;
 }
 
+/* -------------------- CACHE MANAGEMENT -------------------- */
+
+export function invalidateMemoryPreview(value) {
+  const url = normalizeUrl(value);
+
+  if (url) {
+    memoryCache.delete(url);
+  }
+}
+
+export function clearPreviewMemoryCache() {
+  memoryCache.clear();
+}
+
 /* -------------------- PUBLIC RESPONSE -------------------- */
 
 export function serializePreview(preview) {
-  if (!preview) return null;
+  if (!preview) {
+    return null;
+  }
+
+  const quality =
+    preview.status === "failed"
+      ? PREVIEW_QUALITY.FAILED
+      : getMetadataQuality(preview);
 
   return {
     url: preview.url,
+
     finalUrl: preview.final_url,
+
     title: preview.title,
+
     description: preview.description,
+
     imageUrl: preview.image_url,
+
     siteName: preview.site_name,
+
     status: preview.status,
+
+    quality,
+
     expiresAt: preview.expires_at,
   };
 }
