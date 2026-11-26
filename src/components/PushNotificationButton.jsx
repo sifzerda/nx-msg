@@ -2,342 +2,202 @@
 
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Bell, BellOff } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
+import { memo } from "react";
 
-const supabase = createClient();
+import {
+    Bell,
+    BellOff,
+    LoaderCircle,
+    AlertCircle,
+    RefreshCw,
+} from "lucide-react";
 
-function urlBase64ToUint8Array(value) {
-  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+import usePushStore from "@/store/usePushStore";
 
-  const base64 = (value + padding)
-    .replace(/-/g, "+")
-    .replace(/_/g, "/");
+function PushNotificationButton() {
+    const supported = usePushStore((state) => state.supported);
+    const initialized = usePushStore((state) => state.initialized);
+    const checking = usePushStore((state) => state.checking);
+    const enabled = usePushStore((state) => state.enabled);
+    const preference = usePushStore((state) => state.preference);
+    const loading = usePushStore((state) => state.loading);
+    const signingOut = usePushStore((state) => state.signingOut);
+    const error = usePushStore((state) => state.error);
+    const warning = usePushStore((state) => state.warning);
+    const enable = usePushStore((state) => state.enable);
+    const disable = usePushStore((state) => state.disable);
+    const refresh = usePushStore((state) => state.refresh);
 
-  const raw = atob(base64);
+    const busy = checking || loading || signingOut;
+    const permission = supported && typeof Notification !== "undefined" ? Notification.permission : null;
 
-  return Uint8Array.from(
-    raw,
-    (char) => char.charCodeAt(0)
-  );
-}
+    /* -------------------- LOADING -------------------- */
 
-function getErrorMessage(error) {
-  return error instanceof Error
-    ? error.message
-    : "Something went wrong";
-}
+    if (checking || (!initialized && !error)) {
+        return (
+            <div className="flex items-center gap-2 text-sm text-gray-400">
+                <LoaderCircle
+                    size={17}
+                    className="animate-spin"
+                />
 
-async function postJSON(url, body) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    cache: "no-store",
-    body: JSON.stringify(body),
-  });
+                Checking notifications...
+            </div>
+        );
+    }
 
-  const result = await response
-    .json()
-    .catch(() => ({}));
+    /* -------------------- UNSUPPORTED -------------------- */
 
-  if (!response.ok) {
-    throw new Error(
-      result.error || `Request failed (${response.status})`
+    if (!supported) {
+        return (
+            <div className="flex max-w-64 items-start gap-2 text-xs text-gray-400">
+                <BellOff
+                    size={17}
+                    className="shrink-0"
+                />
+
+                <p>
+                    Push notifications are not supported
+                    by this browser.
+                </p>
+            </div>
+        );
+    }
+
+    /* -------------------- RENDER -------------------- */
+
+    return (
+        <div className="flex flex-col items-start gap-2">
+
+            {/* Notification status */}
+
+            <div className="flex items-center gap-2 text-xs">
+
+                <span
+                    className={[
+                        "h-2 w-2 rounded-full",
+
+                        enabled
+                            ? "bg-green-500"
+                            : "bg-gray-500",
+                    ].join(" ")}
+                />
+
+                <span className="text-gray-400">
+                    {enabled
+                        ? "Notifications enabled"
+                        : "Notifications inactive"}
+                </span>
+
+            </div>
+
+            {/* Main action */}
+
+            <button
+                type="button"
+                disabled={
+                    busy ||
+                    !initialized ||
+                    (!enabled && permission === "denied")
+                }
+                onClick={enabled ? disable : enable}
+                className={[
+                    "flex items-center gap-2",
+                    "rounded-lg border px-3 py-2",
+                    "text-sm font-medium transition-colors",
+
+                    enabled
+                        ? "border-gray-700 text-gray-300 hover:border-red-500 hover:text-red-400"
+                        : "border-blue-600 bg-blue-600 text-white hover:bg-blue-500",
+
+                    "disabled:cursor-not-allowed",
+                    "disabled:opacity-50",
+                ].join(" ")}
+            >
+                {loading ? (
+                    <LoaderCircle
+                        size={17}
+                        className="animate-spin"
+                    />
+                ) : enabled ? (
+                    <BellOff size={17} />
+                ) : (
+                    <Bell size={17} />
+                )}
+
+                {loading
+                    ? "Please wait..."
+                    : enabled
+                        ? "Disable notifications"
+                        : "Enable notifications"}
+            </button>
+
+            {/* Saved preference without active subscription */}
+
+            {initialized && preference && !enabled && (
+                <button
+                    type="button"
+                    disabled={busy}
+                    onClick={disable}
+                    className="text-xs text-gray-400 underline hover:text-white disabled:opacity-50"
+                >
+                    Disable saved notification preference
+                </button>
+            )}
+
+            {/* Browser permission denied */}
+
+            {permission === "denied" && (
+                <p className="max-w-64 text-xs leading-relaxed text-amber-400">
+                    Notifications are blocked by your browser.
+                    Change the site permissions to enable them.
+                </p>
+            )}
+
+            {/* Errors */}
+
+            {error && (
+                <div
+                    role="alert"
+                    className="flex max-w-64 items-start gap-2 text-xs text-red-400"
+                >
+                    <AlertCircle
+                        size={15}
+                        className="shrink-0"
+                    />
+
+                    <p>{error}</p>
+                </div>
+            )}
+
+            {/* Warnings */}
+
+            {warning && (
+                <p
+                    role="status"
+                    className="max-w-64 text-xs text-amber-400"
+                >
+                    {warning}
+                </p>
+            )}
+
+            {/* Retry / refresh */}
+
+            <button
+                type="button"
+                disabled={busy}
+                onClick={refresh}
+                className="flex items-center gap-1.5 text-xs text-gray-400 transition-colors hover:text-white disabled:opacity-50"
+            >
+                <RefreshCw size={13} />
+
+                {error
+                    ? "Retry"
+                    : "Refresh status"}
+            </button>
+
+        </div>
     );
-  }
-
-  return result;
 }
 
-async function getPreference() {
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError) throw authError;
-
-  if (!user) return null;
-
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("notifications_enabled")
-    .eq("id", user.id)
-    .single();
-
-  if (error) throw error;
-
-  return data.notifications_enabled === true;
-}
-
-async function getRegistration() {
-  return navigator.serviceWorker.register("/sw.js");
-}
-
-async function getSubscription(registration) {
-  return registration.pushManager.getSubscription();
-}
-
-async function createSubscription(registration) {
-  const publicKey =
-    process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-
-  if (!publicKey) {
-    throw new Error("Missing VAPID public key");
-  }
-
-  return registration.pushManager.subscribe({
-    userVisibleOnly: true,
-    applicationServerKey:
-      urlBase64ToUint8Array(publicKey),
-  });
-}
-
-async function registerSubscription(
-  subscription,
-  rememberPreference
-) {
-  return postJSON("/api/push/subscribe", {
-    subscription: subscription.toJSON(),
-    rememberPreference,
-  });
-}
-
-export default function PushNotificationButton() {
-  const [supported, setSupported] = useState(false);
-  const [checking, setChecking] = useState(true);
-  const [enabled, setEnabled] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const mountedRef = useRef(false);
-  const busyRef = useRef(false);
-
-  useEffect(() => {
-    mountedRef.current = true;
-
-    const isSupported =
-      "serviceWorker" in navigator &&
-      "PushManager" in window &&
-      "Notification" in window;
-
-    setSupported(isSupported);
-
-    if (!isSupported) {
-      setChecking(false);
-      return () => {
-        mountedRef.current = false;
-      };
-    }
-
-    async function restoreNotifications() {
-      try {
-        const preference = await getPreference();
-
-        if (!mountedRef.current) return;
-
-        if (!preference) {
-          setEnabled(false);
-          return;
-        }
-
-        // Do not request permission automatically.
-        if (Notification.permission !== "granted") {
-          setEnabled(false);
-          return;
-        }
-
-        const registration = await getRegistration();
-
-        if (!mountedRef.current) return;
-
-        let subscription =
-          await getSubscription(registration);
-
-        // After logout, the browser subscription was
-        // removed. Recreate it silently on login.
-        if (!subscription) {
-          subscription =
-            await createSubscription(registration);
-        }
-
-        if (!mountedRef.current) return;
-
-        await registerSubscription(subscription, false);
-
-        if (mountedRef.current) {
-          setEnabled(true);
-        }
-      } catch (err) {
-        console.error(
-          "Failed to restore notifications:",
-          err
-        );
-
-        if (mountedRef.current) {
-          setEnabled(false);
-          setError(getErrorMessage(err));
-        }
-      } finally {
-        if (mountedRef.current) {
-          setChecking(false);
-        }
-      }
-    }
-
-    restoreNotifications();
-
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  async function enable() {
-    if (busyRef.current || checking) return;
-
-    busyRef.current = true;
-    setLoading(true);
-    setError("");
-
-    try {
-      const permission =
-        await Notification.requestPermission();
-
-      if (permission !== "granted") {
-        throw new Error(
-          "Notification permission was not granted"
-        );
-      }
-
-      const registration = await getRegistration();
-
-      let subscription =
-        await getSubscription(registration);
-
-      if (!subscription) {
-        subscription =
-          await createSubscription(registration);
-      }
-
-      // Explicit opt-in: save the preference.
-      await registerSubscription(subscription, true);
-
-      if (mountedRef.current) {
-        setEnabled(true);
-      }
-    } catch (err) {
-      if (mountedRef.current) {
-        setError(getErrorMessage(err));
-      }
-    } finally {
-      busyRef.current = false;
-
-      if (mountedRef.current) {
-        setLoading(false);
-      }
-    }
-  }
-
-  async function disable() {
-    if (busyRef.current || checking) return;
-
-    busyRef.current = true;
-    setLoading(true);
-    setError("");
-
-    try {
-      const registration = await getRegistration();
-
-      const subscription =
-        await getSubscription(registration);
-
-      if (subscription) {
-        await postJSON("/api/push/unsubscribe", {
-          endpoint: subscription.endpoint,
-          rememberPreference: true,
-        });
-
-        const removed =
-          await subscription.unsubscribe();
-
-        if (!removed) {
-          throw new Error(
-            "Could not remove browser subscription"
-          );
-        }
-      } else {
-        // No browser subscription exists, but the
-        // account preference must still be disabled.
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-
-        if (!user) {
-          throw new Error("Not signed in");
-        }
-
-        const { error: preferenceError } = await supabase
-          .from("profiles")
-          .update({ notifications_enabled: false })
-          .eq("id", user.id);
-
-        if (preferenceError) {
-          throw preferenceError;
-        }
-      }
-
-      if (mountedRef.current) {
-        setEnabled(false);
-      }
-    } catch (err) {
-      if (mountedRef.current) {
-        setError(getErrorMessage(err));
-      }
-    } finally {
-      busyRef.current = false;
-
-      if (mountedRef.current) {
-        setLoading(false);
-      }
-    }
-  }
-
-  if (!supported) return null;
-
-  return (
-    <div className="flex flex-col gap-1">
-      <button
-        type="button"
-        disabled={checking || loading}
-        onClick={enabled ? disable : enable}
-        className="flex items-center gap-2 rounded-lg border border-gray-700 px-3 py-2 text-sm text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {enabled ? (
-          <Bell size={16} />
-        ) : (
-          <BellOff size={16} />
-        )}
-
-        {checking
-          ? "Checking..."
-          : loading
-            ? "Please wait..."
-            : enabled
-              ? "Disable notifications"
-              : "Enable notifications"}
-      </button>
-
-      {error && (
-        <p
-          role="alert"
-          className="max-w-64 text-xs text-red-400"
-        >
-          {error}
-        </p>
-      )}
-    </div>
-  );
-}
+export default memo(PushNotificationButton);

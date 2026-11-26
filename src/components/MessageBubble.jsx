@@ -13,12 +13,14 @@ import {
   CheckCheck,
   Reply,
 } from "lucide-react";
-import {
-  isPreviewAllowed,
-} from "@/utils/previewUrlPolicy";
+
+import { isPreviewAllowed } from "@/utils/previewUrlPolicy";
+import { extractUrls } from "@/utils/urlUtils";
+
 import QuotedMessage from "./extras/QuotedMessage";
 import ReactionPicker from "./extras/ReactionPicker";
 import MessageReactions from "./MessageReactions";
+
 import ImageAttachment from "./extras/ImageAttachment";
 import FileAttachment from "./extras/FileAttachment";
 import GifMessage from "./extras/GifMessage";
@@ -26,7 +28,7 @@ import GifMessage from "./extras/GifMessage";
 import MessageText from "./extras/MessageText";
 import LinkPreview from "./extras/LinkPreview";
 
-import { extractUrls } from "@/utils/urlUtils";
+/* -------------------- CONSTANTS -------------------- */
 
 const EMPTY_REACTIONS = Object.freeze([]);
 
@@ -34,6 +36,8 @@ const timeFormatter = new Intl.DateTimeFormat("en-AU", {
   hour: "numeric",
   minute: "2-digit",
 });
+
+/* -------------------- COMPONENT -------------------- */
 
 function MessageBubble({
   message,
@@ -56,6 +60,17 @@ function MessageBubble({
     new Date(message.created_at)
   );
 
+  /* -------------------- PERMISSIONS -------------------- */
+
+  const canReply = typeof onReply === "function";
+
+  const canReact =
+    typeof onToggleReaction === "function";
+
+  const hasActions = canReply || canReact;
+
+  /* -------------------- MESSAGE CONTENT -------------------- */
+
   const hasGif = Boolean(message.gif_id);
 
   const hasImage =
@@ -70,7 +85,7 @@ function MessageBubble({
 
   const hasContent = Boolean(message.content?.trim());
 
-  // Extract the first URL for automatic link previews.
+  /* -------------------- LINK PREVIEW -------------------- */
 
   const previewUrl = useMemo(() => {
     const [url] = extractUrls(
@@ -85,13 +100,20 @@ function MessageBubble({
     return url;
   }, [message.content]);
 
+  /* -------------------- REACTIONS -------------------- */
+
   const selectedEmojis = useMemo(() => {
+    if (!canReact || !reactions.length) {
+      return EMPTY_REACTIONS;
+    }
+
     return reactions
       .filter(
         (reaction) => reaction.user_id === userId
       )
       .map((reaction) => reaction.emoji);
-  }, [reactions, userId]);
+
+  }, [reactions, userId, canReact]);
 
   const handleReaction = useCallback(
     (emoji) => {
@@ -99,6 +121,8 @@ function MessageBubble({
     },
     [message.id, onToggleReaction]
   );
+
+  /* -------------------- REPLIES -------------------- */
 
   const handleReply = useCallback(() => {
     onReply?.(message);
@@ -110,6 +134,8 @@ function MessageBubble({
     }
   }, [message.reply_to_id, onJumpToMessage]);
 
+  /* -------------------- RENDER -------------------- */
+
   return (
     <div
       className={[
@@ -119,43 +145,58 @@ function MessageBubble({
     >
       {/* Message actions */}
 
-      <div
-        className={[
-          "flex shrink-0 items-center transition-opacity",
-          "md:opacity-0 md:group-hover:opacity-100",
-          "md:group-focus-within:opacity-100",
-          isOwn ? "order-first" : "order-last",
-        ].join(" ")}
-      >
-        <ReactionPicker
-          isOwn={isOwn}
-          selectedEmojis={selectedEmojis}
-          onSelect={handleReaction}
-        />
-
-        <button
-          type="button"
-          onClick={handleReply}
-          aria-label="Reply to message"
-          title="Reply to message"
-          className="rounded-full p-2 text-gray-500 transition-colors hover:bg-gray-800 hover:text-blue-400"
+      {hasActions && (
+        <div
+          className={[
+            "flex shrink-0 items-center transition-opacity",
+            "md:opacity-0 md:group-hover:opacity-100",
+            "md:group-focus-within:opacity-100",
+            isOwn ? "order-first" : "order-last",
+          ].join(" ")}
         >
-          <Reply size={17} />
-        </button>
-      </div>
+          {canReact && (
+            <ReactionPicker
+              isOwn={isOwn}
+              selectedEmojis={selectedEmojis}
+              onSelect={handleReaction}
+            />
+          )}
+
+          {canReply && (
+            <button
+              type="button"
+              onClick={handleReply}
+              aria-label="Reply to message"
+              title="Reply to message"
+              className="rounded-full p-2 text-gray-500 transition-colors hover:bg-gray-800 hover:text-blue-400"
+            >
+              <Reply size={17} />
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Message and reactions */}
 
       <div
         className={[
-          "min-w-0 max-w-[calc(100%-80px)]",
+          "min-w-0",
+
+          canReply && canReact
+            ? "max-w-[calc(100%-80px)]"
+            : hasActions
+              ? "max-w-[calc(100%-44px)]"
+              : "max-w-full",
+
           "sm:max-w-[75%]",
+
           previewUrl ? "w-96" : "",
         ].join(" ")}
       >
         <div
           className={[
             "min-w-0 rounded-2xl px-4 py-2.5",
+
             isOwn
               ? "rounded-br-sm bg-blue-600 text-white"
               : "rounded-bl-sm bg-gray-800 text-gray-100",
@@ -232,6 +273,7 @@ function MessageBubble({
             className={[
               "mt-1 flex items-center justify-end gap-1",
               "text-[11px]",
+
               isOwn
                 ? "text-blue-200"
                 : "text-gray-400",
@@ -258,7 +300,7 @@ function MessageBubble({
           </div>
         </div>
 
-        {/* Emoji reactions */}
+        {/* Existing emoji reactions */}
 
         <MessageReactions
           reactions={reactions}

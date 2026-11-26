@@ -2,13 +2,17 @@
 
 import { NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
+
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWebPush } from "@/lib/webPush";
 import { getNotificationPreview } from "@/utils/notificationPreview";
 
 export const runtime = "nodejs";
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/* -------------------- CONSTANTS -------------------- */
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const MESSAGE_COLUMNS = [
   "id",
@@ -20,8 +24,38 @@ const MESSAGE_COLUMNS = [
   "attachment_name",
 ].join(", ");
 
+const EXPIRED_STATUS_CODES = new Set([
+  404,
+  410,
+]);
+
+const DELIVERY_BATCH_SIZE = 10;
+
+/* -------------------- RESPONSE -------------------- */
+
+function json(body, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+function emptyDeliveryResult() {
+  return json({
+    success: true,
+    sent: 0,
+    failed: 0,
+    expired: 0,
+  });
+}
+
+/* -------------------- AUTHENTICATION -------------------- */
+
 function validSecret(request) {
-  const authorization = request.headers.get("authorization") || "";
+  const authorization =
+    request.headers.get("authorization") || "";
 
   if (!/^Bearer\s+/i.test(authorization)) {
     return false;
@@ -32,7 +66,8 @@ function validSecret(request) {
     ""
   );
 
-  const expected = process.env.PUSH_WEBHOOK_SECRET || "";
+  const expected =
+    process.env.PUSH_WEBHOOK_SECRET || "";
 
   const a = Buffer.from(provided);
   const b = Buffer.from(expected);
@@ -44,193 +79,335 @@ function validSecret(request) {
   );
 }
 
+/* -------------------- VALIDATION -------------------- */
+
 function isValidEvent(payload) {
   return (
-    payload?.type === "INSERT" && payload?.table === "messages" && payload?.schema === "public"
+    payload?.type === "INSERT" &&
+    payload?.table === "messages" &&
+    payload?.schema === "public"
   );
 }
 
-async function removeExpiredSubscription(admin, subscriptionId) {
-  const { error } = await admin
-    .from("push_subscriptions")
-    .delete()
-    .eq("id", subscriptionId);
-
-  if (error) {
-    console.error("Failed to remove expired push subscription:", error.message);
-  }
+function isValidMessageId(messageId) {
+  return (
+    typeof messageId === "string" &&
+    UUID_PATTERN.test(messageId)
+  );
 }
 
-async function deliverNotification(admin, subscription, notification) {
+/* -------------------- DATABASE -------------------- */
+
+async function getMessage(admin, messageId) {
+  const { data, error } = await admin
+    .from("messages")
+    .select(MESSAGE_COLUMNS)
+    .eq("id", messageId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+}
+
+async function getEligibleSubscriptions(
+  admin,
+  messageId
+) {
+  const { data, error } = await admin.rpc(
+    "get_message_push_subscriptions",
+    {
+      target_message_id: messageId,
+    }
+  );
+
+  if (error) {
+    throw error;
+  }
+
+  if (!Array.isArray(data)) {
+    throw new Error(
+      "Invalid push subscription response"
+    );
+  }
+
+  return data;
+}
+
+async function getSender(admin, senderId) {
+  const { data, error } = await admin
+    .from("profiles")
+    .select("display_name, username")
+    .eq("id", senderId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+}
+
+/* -------------------- NOTIFICATION -------------------- */
+
+function createNotification(message, sender) {
+  const senderName =
+    sender?.display_name?.trim() ||
+    sender?.username?.trim() ||
+    "Someone";
+
+  return {
+    title: `${senderName} sent you a message`,
+
+    body: getNotificationPreview(message),
+
+    url: `/messages/${message.conversation_id}`,
+
+    tag: `chat:${message.conversation_id}`,
+  };
+}
+
+/* -------------------- DELIVERY -------------------- */
+
+async function deliverNotification(
+  subscription,
+  notification
+) {
   try {
-    await sendWebPush(subscription, notification);
+    await sendWebPush(
+      subscription,
+      notification
+    );
 
-    return "sent";
+    return {
+      status: "sent",
+    };
+
   } catch (error) {
-    if ([404, 410].includes(error?.statusCode)) {
-      await removeExpiredSubscription(admin, subscription.id);
-
-      return "expired";
+    if (
+      EXPIRED_STATUS_CODES.has(
+        error?.statusCode
+      )
+    ) {
+      return {
+        status: "expired",
+        subscriptionId: subscription.id,
+      };
     }
 
     throw error;
   }
 }
 
+/* -------------------- EXPIRED SUBSCRIPTIONS -------------------- */
+
+async function removeExpiredSubscriptions(
+  admin,
+  subscriptionIds
+) {
+  if (!subscriptionIds.length) {
+    return;
+  }
+
+  const { error } = await admin
+    .from("push_subscriptions")
+    .delete()
+    .in("id", subscriptionIds);
+
+  if (error) {
+    console.error(
+      "Failed to remove expired push subscriptions:",
+      error.message
+    );
+  }
+}
+
+/* -------------------- BATCHED DELIVERY -------------------- */
+
+async function deliverNotifications(
+  admin,
+  subscriptions,
+  notification
+) {
+  let sent = 0;
+  let failed = 0;
+  let expired = 0;
+
+  const expiredSubscriptionIds = [];
+
+  for (
+    let offset = 0;
+    offset < subscriptions.length;
+    offset += DELIVERY_BATCH_SIZE
+  ) {
+    const batch = subscriptions.slice(
+      offset,
+      offset + DELIVERY_BATCH_SIZE
+    );
+
+    const results = await Promise.allSettled(
+      batch.map((subscription) =>
+        deliverNotification(
+          subscription,
+          notification
+        )
+      )
+    );
+
+    for (const result of results) {
+      if (result.status === "rejected") {
+        failed++;
+
+        continue;
+      }
+
+      const delivery = result.value;
+
+      if (delivery.status === "sent") {
+        sent++;
+
+      } else if (delivery.status === "expired") {
+        expired++;
+
+        expiredSubscriptionIds.push(
+          delivery.subscriptionId
+        );
+      }
+    }
+  }
+
+  /* Delete expired subscriptions in one request. */
+
+  await removeExpiredSubscriptions(
+    admin,
+    expiredSubscriptionIds
+  );
+
+  return {
+    sent,
+    failed,
+    expired,
+  };
+}
+
+/* -------------------- ROUTE -------------------- */
+
 export async function POST(request) {
-  // Authenticate database webhook.
+  /* Authenticate database webhook. */
 
   if (!validSecret(request)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return json(
+      { error: "Unauthorized" },
+      401
+    );
   }
 
   try {
-    // Parse webhook payload.
+    /* Parse and validate webhook event. */
 
     const payload = await request
       .json()
       .catch(() => null);
 
     if (!isValidEvent(payload)) {
-      return NextResponse.json({ error: "Invalid event" }, { status: 400 });
+      return json(
+        { error: "Invalid event" },
+        400
+      );
     }
 
     const messageId = payload.record?.id;
 
-    if (
-      typeof messageId !== "string" || !UUID_PATTERN.test(messageId)
-    ) {
-      return NextResponse.json({ error: "Invalid message ID" }, { status: 400 });
+    if (!isValidMessageId(messageId)) {
+      return json(
+        { error: "Invalid message ID" },
+        400
+      );
     }
 
     const admin = createAdminClient();
 
-    // Retrieve the actual message from the database.
-    // Do not trust message content from the webhook.
+    /* Retrieve authoritative message data. */
 
-    const {
-      data: message,
-      error: messageError,
-    } = await admin
-      .from("messages")
-      .select(MESSAGE_COLUMNS)
-      .eq("id", messageId)
-      .maybeSingle();
-
-    if (messageError) {
-      throw messageError;
-    }
+    const message = await getMessage(
+      admin,
+      messageId
+    );
 
     if (!message) {
-      return NextResponse.json({ error: "Message not found" }, { status: 404 });
+      return json(
+        { error: "Message not found" },
+        404
+      );
     }
 
-    // Retrieve conversation recipients,
-    // excluding the message sender.
+    /* Retrieve eligible subscriptions.
 
-    const {
-      data: members,
-      error: membersError,
-    } = await admin
-      .from("conversation_members")
-      .select("user_id")
-      .eq(
-        "conversation_id",
-        message.conversation_id
-      )
-      .neq("user_id", message.sender_id);
+       The database function enforces:
 
-    if (membersError) {
-      throw membersError;
-    }
+       - Conversation membership
+       - Sender exclusion
+       - Notification preferences
+       - Bidirectional private-chat blocking
+       - Group notification support
+    */
 
-    const recipientIds = (members ?? []).map((member) => member.user_id);
-
-    if (!recipientIds.length) {
-      return NextResponse.json({
-        success: true,
-        sent: 0,
-        failed: 0,
-        expired: 0,
-      });
-    }
-
-    // Retrieve sender and recipient subscriptions
-    // concurrently.
-
-    const [
-      senderResult,
-      subscriptionsResult,
-    ] = await Promise.all([
-      admin
-        .from("profiles")
-        .select("display_name, username")
-        .eq("id", message.sender_id)
-        .maybeSingle(),
-
-      admin
-        .from("push_subscriptions")
-        .select("id, endpoint, p256dh, auth_key")
-        .in("user_id", recipientIds),
-    ]);
-
-    if (senderResult.error) {
-      throw senderResult.error;
-    }
-
-    if (subscriptionsResult.error) {
-      throw subscriptionsResult.error;
-    }
-
-    const subscriptions = subscriptionsResult.data ?? [];
+    const subscriptions =
+      await getEligibleSubscriptions(
+        admin,
+        message.id
+      );
 
     if (!subscriptions.length) {
-      return NextResponse.json({
-        success: true,
-        sent: 0,
-        failed: 0,
-        expired: 0,
-      });
+      return emptyDeliveryResult();
     }
 
-    const sender = senderResult.data;
-    const senderName = sender?.display_name?.trim() || sender?.username?.trim() || "Someone";
+    /* Only retrieve sender information if
+       there are notifications to deliver. */
 
-    // Construct the notification once,
-    // rather than for every subscription.
-
-    const notification = {
-      title: `${senderName} sent you a message`,
-      body: getNotificationPreview(message),
-      url: `/messages/${message.conversation_id}`,
-      tag: `chat:${message.conversation_id}`,
-    };
-
-    // Deliver notifications concurrently.
-
-    const results = await Promise.allSettled(subscriptions.map((subscription) => deliverNotification(admin, subscription, notification)));
-
-    let sent = 0;
-    let failed = 0;
-    let expired = 0;
-
-    for (const result of results) {
-      if (result.status === "rejected") {
-        failed++;
-      } else if (result.value === "sent") {
-        sent++;
-      } else if (result.value === "expired") {
-        expired++;
-      }
-    }
-
-    return NextResponse.json(
-      { success: failed === 0, sent, failed, expired },
-      { status: failed ? 503 : 200 }
+    const sender = await getSender(
+      admin,
+      message.sender_id
     );
-  } catch (error) {
-    console.error("Push delivery failed:", error);
 
-    return NextResponse.json({ error: "Push delivery failed" }, { status: 500 });
+    const notification = createNotification(
+      message,
+      sender
+    );
+
+    /* Deliver notifications in bounded batches. */
+
+    const {
+      sent,
+      failed,
+      expired,
+    } = await deliverNotifications(
+      admin,
+      subscriptions,
+      notification
+    );
+
+    return json(
+      {
+        success: failed === 0,
+        sent,
+        failed,
+        expired,
+      },
+      failed ? 503 : 200
+    );
+
+  } catch (error) {
+    console.error(
+      "Push delivery failed:",
+      error
+    );
+
+    return json(
+      { error: "Push delivery failed" },
+      500
+    );
   }
 }

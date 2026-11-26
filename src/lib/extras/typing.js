@@ -12,9 +12,7 @@ export async function createTypingChannel({
   onStatus,
 }) {
   if (!conversationId || !userId) {
-    throw new Error(
-      "Conversation ID and user ID are required."
-    );
+    throw new Error("Conversation ID and user ID are required.");
   }
 
   await supabase.realtime.setAuth();
@@ -66,23 +64,16 @@ export async function createTypingChannel({
       onStatus?.(connected);
 
       if (
-        status === "CHANNEL_ERROR" ||
-        status === "TIMED_OUT"
+        status === "CHANNEL_ERROR" || status === "TIMED_OUT"
       ) {
-        console.warn(
-          "Typing channel:",
-          status,
-          error
-        );
+        console.warn("Typing channel:", status, error);
       }
     });
 
   // Broadcast local typing activity.
   function broadcast(typing) {
     if (
-      closed ||
-      !connected ||
-      typeof typing !== "boolean"
+      closed || !connected || typeof typing !== "boolean"
     ) {
       return;
     }
@@ -105,10 +96,7 @@ export async function createTypingChannel({
         }
       })
       .catch((error) => {
-        console.warn(
-          "Typing broadcast failed:",
-          error
-        );
+        console.warn("Typing broadcast failed:", error);
       });
   }
 

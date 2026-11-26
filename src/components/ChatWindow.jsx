@@ -11,10 +11,14 @@ import {
   useState,
 } from "react";
 
-import { Download, UsersRound, Search } from "lucide-react";
+import {
+  Download,
+  UsersRound,
+  Search,
+} from "lucide-react";
 
 import useChatStore from "@/store/useChatStore";
-
+import ChatBlockMenu from "./extras/ChatBlockMenu";
 import useReadReceipts from "@/hooks/useReadReceipts";
 import useTypingIndicator from "@/hooks/useTypingIndicator";
 import useCurrentDay from "@/hooks/useCurrentDay";
@@ -30,6 +34,7 @@ import MessageInput from "./MessageInput";
 import TypingIndicator from "./extras/TypingIndicator";
 import DateSeparator from "./extras/DateSeparator";
 import ConversationSearch from "./extras/ConversationSearch";
+import BlockedComposer from "./BlockedComposer";
 
 const EMPTY_MESSAGES = [];
 const EMPTY_NAMES = [];
@@ -52,50 +57,30 @@ export default function ChatWindow({
   const [searchOpen, setSearchOpen] = useState(false);
 
   // Zustand selectors
-  const messages = useChatStore((state) =>
-    state.activeChatId === conversationId
-      ? state.messages
-      : EMPTY_MESSAGES
-  );
-
-  const chat = useChatStore((state) =>
-    state.conversations.find(
-      (item) => item.id === conversationId
-    )
-  );
-
+  const messages = useChatStore((state) => state.activeChatId === conversationId ? state.messages : EMPTY_MESSAGES);
+  const chat = useChatStore((state) => state.conversations.find((item) => item.id === conversationId));
   const loading = useChatStore((s) => s.loading);
   const error = useChatStore((s) => s.error);
-
   const replyTo = useChatStore((s) => s.replyTo);
   const setReplyTo = useChatStore((s) => s.setReplyTo);
-
   const openChat = useChatStore((s) => s.openChat);
   const closeChat = useChatStore((s) => s.closeChat);
   const markRead = useChatStore((s) => s.markRead);
+  const clearReply = useChatStore((state) => state.clearReply);
 
   // Conversation details
   const isGroup = chat?.type === "group";
-
-  const chatName = isGroup
-    ? chat?.group_name || "Unnamed Group"
-    : chat?.other_display_name ||
-      chat?.other_username ||
-      "Conversation";
+  const isPrivate = chat?.type === "private";
+  const isBlockedByMe = isPrivate && chat?.is_blocked_by_me === true;
+  const canSendMessages = chat?.can_send_messages === true;
+  const messagingUnavailable = chat?.can_send_messages === false;
+  const chatName = isGroup ? chat?.group_name || "Unnamed Group" : chat?.other_display_name || chat?.other_username || "Conversation";
 
   // Date separators
   const now = useCurrentDay();
-
-  const messageGroups = useMemo(
-    () => groupMessagesByDate(messages),
-    [messages]
-  );
-
+  const messageGroups = useMemo(() => groupMessagesByDate(messages), [messages]);
   // Message replies
-  const replyMessages = useReplyMessages(
-    conversationId,
-    messages
-  );
+  const replyMessages = useReplyMessages(conversationId, messages);
 
   // Emoji reactions
   const {
@@ -109,15 +94,8 @@ export default function ChatWindow({
   );
 
   // Private read receipts
-  const recipientReadAt = useReadReceipts(
-    conversationId,
-    userId,
-    chat?.type === "private"
-  );
-
-  const recipientReadTime = recipientReadAt
-    ? Date.parse(recipientReadAt)
-    : 0;
+  const recipientReadAt = useReadReceipts(conversationId, userId, chat?.type === "private");
+  const recipientReadTime = recipientReadAt ? Date.parse(recipientReadAt) : 0;
 
   // Typing indicators
   const {
@@ -126,8 +104,22 @@ export default function ChatWindow({
     stopTyping,
   } = useTypingIndicator(
     conversationId,
-    userId
+    userId,
+    {
+      enabled: canSendMessages,
+    }
   );
+
+  useEffect(() => {
+    if (messagingUnavailable) {
+      stopTyping();
+      clearReply();
+    }
+  }, [
+    messagingUnavailable,
+    stopTyping,
+    clearReply,
+  ]);
 
   // Search controls
   const closeSearch = useCallback(() => {
@@ -450,7 +442,7 @@ export default function ChatWindow({
         message.sender_id === userId &&
         recipientReadTime > 0 &&
         recipientReadTime >=
-          Date.parse(message.created_at)
+        Date.parse(message.created_at)
       );
     },
     [isGroup, userId, recipientReadTime]
@@ -481,6 +473,14 @@ export default function ChatWindow({
                 {chat?.member_count ?? 0} members
               </p>
             )}
+
+            {isPrivate && messagingUnavailable && (
+              <p className="mt-0.5 text-xs text-gray-400">
+                {isBlockedByMe
+                  ? "You have blocked this user"
+                  : "Messaging unavailable"}
+              </p>
+            )}
           </div>
 
           {/* Search button */}
@@ -490,11 +490,10 @@ export default function ChatWindow({
             aria-label="Search conversation"
             aria-expanded={searchOpen}
             title="Search conversation"
-            className={`flex shrink-0 items-center justify-center rounded-lg border p-2.5 transition-colors ${
-              searchOpen
-                ? "border-blue-500 bg-blue-600/20 text-blue-400"
-                : "border-gray-700 bg-gray-900 text-gray-300 hover:border-blue-500 hover:text-white"
-            }`}
+            className={`flex shrink-0 items-center justify-center rounded-lg border p-2.5 transition-colors ${searchOpen
+              ? "border-blue-500 bg-blue-600/20 text-blue-400"
+              : "border-gray-700 bg-gray-900 text-gray-300 hover:border-blue-500 hover:text-white"
+              }`}
           >
             <Search size={18} />
           </button>
@@ -516,6 +515,16 @@ export default function ChatWindow({
                 : "Download chat"}
             </span>
           </button>
+
+          {isPrivate && chat?.other_user_id && (
+            <ChatBlockMenu
+              key={`${userId}:${conversationId}`}
+              userId={chat.other_user_id}
+              displayName={chatName}
+              isBlocked={isBlockedByMe}
+            />
+          )}
+
         </header>
 
         {/* Export errors */}
@@ -555,7 +564,9 @@ export default function ChatWindow({
 
         {!loading && messages.length === 0 && (
           <p className="text-center text-gray-500">
-            No messages yet. Say hello!
+            {canSendMessages
+              ? "No messages yet. Say hello!"
+              : "No messages yet."}
           </p>
         )}
 
@@ -598,7 +609,11 @@ export default function ChatWindow({
                     quotedSenderName={getSenderName(
                       quotedMessage
                     )}
-                    onReply={setReplyTo}
+                    onReply={
+                      canSendMessages
+                        ? setReplyTo
+                        : undefined
+                    }
                     onJumpToMessage={jumpToMessage}
 
                     userId={userId}
@@ -638,17 +653,26 @@ export default function ChatWindow({
           </p>
         )}
 
-        {/* Typing indicator */}
-        <TypingIndicator names={typingNames} />
+        {/* Message composer and permissions */}
+        {canSendMessages ? (
+          <>
+            <TypingIndicator names={typingNames} />
 
-        {/* Message input */}
-        <MessageInput
-          key={conversationId}
-          userId={userId}
-          onTyping={notifyTyping}
-          onStopTyping={stopTyping}
-          replySenderName={getSenderName(replyTo)}
-        />
+            <MessageInput
+              key={conversationId}
+              userId={userId}
+              onTyping={notifyTyping}
+              onStopTyping={stopTyping}
+              replySenderName={getSenderName(replyTo)}
+            />
+          </>
+        ) : (
+          <BlockedComposer
+            isBlockedByMe={isBlockedByMe}
+            messagingUnavailable={messagingUnavailable}
+          />
+        )}
+
       </div>
     </div>
   );

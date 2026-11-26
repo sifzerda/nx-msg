@@ -5,8 +5,11 @@ import { createClient } from "@/lib/supabase/server";
 
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
+import PushNotificationInitializer from "@/components/PushNotificationInitializer";
 
 import "./globals.css";
+
+/* -------------------- FONTS -------------------- */
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -18,10 +21,14 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+/* -------------------- METADATA -------------------- */
+
 export const metadata = {
   title: "Messenger",
   description: "Real-time messaging application",
 };
+
+/* -------------------- ROOT LAYOUT -------------------- */
 
 export default async function RootLayout({ children }) {
   const supabase = await createClient();
@@ -42,27 +49,41 @@ export default async function RootLayout({ children }) {
     profile = data;
   }
 
+  const currentUser = user
+    ? {
+        id: user.id,
+        username: profile?.username ?? "",
+        display_name: profile?.display_name ?? "User",
+      }
+    : null;
+
   return (
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable}`}
     >
       <body className="flex h-dvh flex-col overflow-hidden bg-gray-950 text-white">
-       
-        <Header user={user ? {
-          id: user.id,
-          username: profile?.username ?? "",
-          display_name: profile?.display_name ?? "User",
-        }
-          : null
-        }
+
+        {/* Background notification management */}
+
+        <PushNotificationInitializer
+          userId={currentUser?.id ?? null}
         />
+
+        {/* Application header */}
+
+        <Header user={currentUser} />
+
+        {/* Page content */}
 
         <main className="min-h-0 flex-1 overflow-hidden">
           {children}
         </main>
 
-        <Footer user={user ? profile ?? { display_name: "User", username: "" } : null} />
+        {/* Application footer */}
+
+        <Footer user={currentUser} />
+
       </body>
     </html>
   );

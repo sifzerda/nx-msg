@@ -11,15 +11,20 @@ import {
 
 import { createTypingChannel } from "@/lib/extras/typing";
 
+/* -------------------- CONSTANTS -------------------- */
+
 const BROADCAST_INTERVAL = 1000;
 const INACTIVITY_TIMEOUT = 2000;
 const REMOTE_TIMEOUT = 5000;
 
-const EMPTY_USERS = [];
+const EMPTY_USERS = Object.freeze([]);
+
+/* -------------------- HOOK -------------------- */
 
 export default function useTypingIndicator(
   conversationId,
-  userId
+  userId,
+  { enabled = true } = {}
 ) {
   const channelRef = useRef(null);
   const inactivityRef = useRef(null);
@@ -28,24 +33,43 @@ export default function useTypingIndicator(
 
   const [typingState, setTypingState] = useState({
     conversationId: null,
-    users: [],
+    userId: null,
+    users: EMPTY_USERS,
   });
+
+  const canUseTyping = Boolean(
+    enabled &&
+    conversationId &&
+    userId
+  );
+
+  /* -------------------- STOP TYPING -------------------- */
 
   const stopTyping = useCallback(() => {
     clearTimeout(inactivityRef.current);
+
     inactivityRef.current = null;
 
-    if (localTypingRef.current) {
-      channelRef.current?.broadcast(false);
-    }
+    const wasTyping = localTypingRef.current;
 
     localTypingRef.current = false;
     lastBroadcastRef.current = 0;
+
+    if (wasTyping) {
+      channelRef.current?.broadcast(false);
+    }
   }, []);
+
+  /* -------------------- NOTIFY TYPING -------------------- */
 
   const notifyTyping = useCallback(
     (value) => {
-      if (!value.trim()) {
+      if (!canUseTyping) return;
+
+      if (
+        typeof value !== "string" ||
+        !value.trim()
+      ) {
         stopTyping();
         return;
       }
@@ -59,8 +83,12 @@ export default function useTypingIndicator(
 
       localTypingRef.current = true;
 
-      if (shouldBroadcast) {
-        channelRef.current?.broadcast(true);
+      if (
+        shouldBroadcast &&
+        channelRef.current
+      ) {
+        channelRef.current.broadcast(true);
+
         lastBroadcastRef.current = now;
       }
 
@@ -71,11 +99,33 @@ export default function useTypingIndicator(
         INACTIVITY_TIMEOUT
       );
     },
-    [stopTyping]
+    [canUseTyping, stopTyping]
   );
 
+  /* -------------------- CHANNEL LIFECYCLE -------------------- */
+
   useEffect(() => {
-    if (!conversationId || !userId) return;
+    if (!canUseTyping) {
+      stopTyping();
+
+      setTypingState((current) => {
+        if (
+          current.conversationId === null &&
+          current.userId === null &&
+          current.users.length === 0
+        ) {
+          return current;
+        }
+
+        return {
+          conversationId: null,
+          userId: null,
+          users: EMPTY_USERS,
+        };
+      });
+
+      return;
+    }
 
     let active = true;
     let connection = null;
@@ -84,11 +134,15 @@ export default function useTypingIndicator(
 
     setTypingState({
       conversationId,
-      users: [],
+      userId,
+      users: EMPTY_USERS,
     });
+
+    /* -------------------- REMOVE REMOTE USER -------------------- */
 
     function removeUser(id) {
       clearTimeout(remoteTimers.get(id));
+
       remoteTimers.delete(id);
 
       if (!active) return;
@@ -96,6 +150,7 @@ export default function useTypingIndicator(
       setTypingState((current) => {
         if (
           current.conversationId !== conversationId ||
+          current.userId !== userId ||
           !current.users.includes(id)
         ) {
           return current;
@@ -103,6 +158,8 @@ export default function useTypingIndicator(
 
         return {
           conversationId,
+          userId,
+
           users: current.users.filter(
             (user) => user !== id
           ),
@@ -110,10 +167,15 @@ export default function useTypingIndicator(
       });
     }
 
-    function handleTyping(payload) {
-      if (!active) return;
+    /* -------------------- RECEIVE TYPING -------------------- */
 
-      const { userId: senderId, typing } = payload;
+    function handleTyping(payload) {
+      if (!active || !payload) return;
+
+      const {
+        userId: senderId,
+        typing,
+      } = payload;
 
       if (
         senderId === userId ||
@@ -132,6 +194,7 @@ export default function useTypingIndicator(
 
       remoteTimers.set(
         senderId,
+
         setTimeout(() => {
           removeUser(senderId);
         }, REMOTE_TIMEOUT)
@@ -139,9 +202,10 @@ export default function useTypingIndicator(
 
       setTypingState((current) => {
         const users =
-          current.conversationId === conversationId
+          current.conversationId === conversationId &&
+          current.userId === userId
             ? current.users
-            : [];
+            : EMPTY_USERS;
 
         if (users.includes(senderId)) {
           return current;
@@ -149,26 +213,38 @@ export default function useTypingIndicator(
 
         return {
           conversationId,
+          userId,
           users: [...users, senderId],
         };
       });
     }
+
+    /* -------------------- CONNECT -------------------- */
 
     async function connect() {
       try {
         const result = await createTypingChannel({
           conversationId,
           userId,
+
           onTyping: handleTyping,
 
           onStatus: (connected) => {
             if (!active || !connected) return;
 
-            if (localTypingRef.current) {
-              channelRef.current?.broadcast(true);
+            if (
+              localTypingRef.current &&
+              channelRef.current
+            ) {
+              channelRef.current.broadcast(true);
+
+              lastBroadcastRef.current = Date.now();
             }
           },
         });
+
+        // The conversation may have changed or
+        // become blocked while connecting.
 
         if (!active) {
           result.close();
@@ -176,11 +252,15 @@ export default function useTypingIndicator(
         }
 
         connection = result;
+
         channelRef.current = result;
 
         if (localTypingRef.current) {
           result.broadcast(true);
+
+          lastBroadcastRef.current = Date.now();
         }
+
       } catch (error) {
         if (active) {
           console.error(
@@ -191,8 +271,12 @@ export default function useTypingIndicator(
       }
     }
 
+    /* -------------------- PAGE VISIBILITY -------------------- */
+
     function handleVisibility() {
-      if (document.visibilityState === "hidden") {
+      if (
+        document.visibilityState === "hidden"
+      ) {
         stopTyping();
       }
     }
@@ -204,16 +288,18 @@ export default function useTypingIndicator(
       handleVisibility
     );
 
+    /* -------------------- CLEANUP -------------------- */
+
     return () => {
       active = false;
 
       stopTyping();
 
-      connection?.close();
-
       if (channelRef.current === connection) {
         channelRef.current = null;
       }
+
+      connection?.close();
 
       for (const timer of remoteTimers.values()) {
         clearTimeout(timer);
@@ -226,10 +312,20 @@ export default function useTypingIndicator(
         handleVisibility
       );
     };
-  }, [conversationId, userId, stopTyping]);
+
+  }, [
+    conversationId,
+    userId,
+    canUseTyping,
+    stopTyping,
+  ]);
+
+  /* -------------------- VISIBLE TYPING USERS -------------------- */
 
   const typingUsers =
-    typingState.conversationId === conversationId
+    canUseTyping &&
+    typingState.conversationId === conversationId &&
+    typingState.userId === userId
       ? typingState.users
       : EMPTY_USERS;
 

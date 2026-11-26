@@ -100,6 +100,14 @@ function reconcileConversations(previous, incoming) {
   return unchanged ? previous : next;
 }
 
+function isMessagingAllowed(state, chatId) {
+  const conversation = state.conversations.find(
+    (chat) => chat.id === chatId
+  );
+
+  return conversation?.can_send_messages === true;
+}
+
 const useChatStore = create((set, get) => ({
   ...INITIAL_STATE,
 
@@ -111,32 +119,59 @@ const useChatStore = create((set, get) => ({
 
     const currentGeneration = generation;
 
-    const request = (async () => {
+    const request = Promise.resolve().then(async () => {
+      let success = false;
+
       do {
         refreshPending = false;
 
         try {
           const incoming = await getConversations();
 
-          if (currentGeneration !== generation) return;
+          if (currentGeneration !== generation) {
+            return false;
+          }
+
+          // A newer refresh has been requested.
+          // Do not apply potentially stale permissions.
+          if (refreshPending) {
+            continue;
+          }
 
           const current = get().conversations;
-          const conversations = reconcileConversations(current, incoming);
+
+          const conversations = reconcileConversations(
+            current,
+            incoming
+          );
 
           if (conversations !== current) {
             set({ conversations });
           }
+
+          success = true;
+
         } catch (error) {
-          if (currentGeneration !== generation) return;
+          if (currentGeneration !== generation) {
+            return false;
+          }
+
+          success = false;
 
           set({
-            error: error.message,
+            error:
+              error?.message ||
+              "Failed to refresh conversations",
           });
         }
+
       } while (
-        refreshPending && currentGeneration === generation
+        refreshPending &&
+        currentGeneration === generation
       );
-    })();
+
+      return success && currentGeneration === generation;
+    });
 
     conversationRequest = request;
 
@@ -280,121 +315,144 @@ const useChatStore = create((set, get) => ({
     return entry.promise;
   },
 
-send: async (
-  content,
-  attachmentFile = null,
-  userId = null,
-  gifId = null
-) => {
-  const message = content.trim();
+  send: async (
+    content,
+    attachmentFile = null,
+    userId = null,
+    gifId = null
+  ) => {
+    const message = content.trim();
 
-  const {
-    activeChatId,
-    sending,
-    replyTo,
-  } = get();
+    const {
+      activeChatId,
+      sending,
+      replyTo,
+    } = get();
 
-  if (
-    !activeChatId ||
-    sending ||
-    (!message && !attachmentFile && !gifId)
-  ) {
-    return false;
-  }
+    if (
+      !activeChatId ||
+      sending ||
+      (!message && !attachmentFile && !gifId)
+    ) {
+      return false;
+    }
 
-  if (message.length > 5000) {
-    set({ error: "Message is too long" });
-    return false;
-  }
+    // Check cached conversation permissions.
+    if (!isMessagingAllowed(get(), activeChatId)) {
+      set({
+        error: "Messaging is unavailable in this conversation",
+      });
 
-  if (attachmentFile && gifId) {
+      return false;
+    }
+
+    if (message.length > 5000) {
+      set({ error: "Message is too long" });
+      return false;
+    }
+
+    if (attachmentFile && gifId) {
+      set({
+        error: "Cannot send a GIF and a file together",
+      });
+
+      return false;
+    }
+
+    if (gifId !== null && !isValidGifId(gifId)) {
+      set({ error: "Invalid GIF ID" });
+      return false;
+    }
+
+    if (attachmentFile && !userId) {
+      set({ error: "Missing user information" });
+      return false;
+    }
+
+    const currentGeneration = generation;
+
+    const replyToId =
+      replyTo?.conversation_id === activeChatId
+        ? replyTo.id
+        : null;
+
     set({
-      error: "Cannot send a GIF and a file together",
+      sending: true,
+      error: null,
     });
 
-    return false;
-  }
-
-  if (gifId !== null && !isValidGifId(gifId)) {
-    set({ error: "Invalid GIF ID" });
-    return false;
-  }
-
-  if (attachmentFile && !userId) {
-    set({ error: "Missing user information" });
-    return false;
-  }
-
-  const currentGeneration = generation;
-
-  const replyToId =
-    replyTo?.conversation_id === activeChatId
-      ? replyTo.id
-      : null;
-
-  set({
-    sending: true,
-    error: null,
-  });
-
-  try {
-    const attachment = attachmentFile
-      ? await uploadAttachment({
+    try {
+      const attachment = attachmentFile
+        ? await uploadAttachment({
           conversationId: activeChatId,
           userId,
           file: attachmentFile,
         })
-      : null;
+        : null;
 
-    if (generation !== currentGeneration) {
+      if (generation !== currentGeneration) {
+        return false;
+      }
+
+      // Permissions may have changed during upload.
+      if (!isMessagingAllowed(get(), activeChatId)) {
+        throw new Error(
+          "Messaging is unavailable in this conversation"
+        );
+      }
+
+      const result = await sendMessage(
+        activeChatId,
+        message,
+        replyToId,
+        attachment,
+        gifId
+      );
+
+      if (generation !== currentGeneration) {
+        return false;
+      }
+
+      get().receiveMessage(result);
+
+      const current = get();
+
+      if (
+        current.activeChatId === activeChatId &&
+        current.replyTo === replyTo
+      ) {
+        set({ replyTo: null });
+      }
+
+      void get().fetchConversations();
+
+      return true;
+
+    } catch (error) {
+      if (generation === currentGeneration) {
+        if (get().activeChatId === activeChatId) {
+          set({
+            error:
+              error?.message ||
+              "Failed to send message",
+          });
+        }
+
+        // Refresh permissions if the database rejected
+        // the message because of an access restriction.
+        if (error?.code === "42501") {
+          void get().fetchConversations();
+        }
+      }
+
       return false;
+
+    } finally {
+      if (generation === currentGeneration) {
+        set({ sending: false });
+      }
     }
-
-    const result = await sendMessage(
-      activeChatId,
-      message,
-      replyToId,
-      attachment,
-      gifId
-    );
-
-    if (generation !== currentGeneration) {
-      return false;
-    }
-
-    get().receiveMessage(result);
-
-    const current = get();
-
-    if (
-      current.activeChatId === activeChatId &&
-      current.replyTo === replyTo
-    ) {
-      set({ replyTo: null });
-    }
-
-    void get().fetchConversations();
-
-    return true;
-  } catch (error) {
-    if (
-      generation === currentGeneration &&
-      get().activeChatId === activeChatId
-    ) {
-      set({
-        error:
-          error.message ||
-          "Failed to send message",
-      });
-    }
-
-    return false;
-  } finally {
-    if (generation === currentGeneration) {
-      set({ sending: false });
-    }
-  }
-},
+  },
 
   closeChat: (chatId) => {
     if (get().activeChatId !== chatId) return;
