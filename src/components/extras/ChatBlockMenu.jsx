@@ -5,6 +5,7 @@
 import {
   memo,
   useEffect,
+  useId,
   useRef,
   useState,
 } from "react";
@@ -32,11 +33,9 @@ function ChatBlockMenu({
 
   const block = useBlockStore((state) => state.block);
   const unblock = useBlockStore((state) => state.unblock);
-
-  const pendingAction = useBlockStore(
-    (state) => state.pendingUsers[userId]
-  );
-
+  const dialogTitleId = useId();
+  const pendingAction = useBlockStore((state) => state.pendingUsers[userId]);
+  const submittingRef = useRef(false);
   const isPending = Boolean(pendingAction);
 
   /* -------------------- OUTSIDE CLICK -------------------- */
@@ -101,9 +100,16 @@ function ChatBlockMenu({
   /* -------------------- BLOCK OPERATION -------------------- */
 
   async function handleConfirm() {
-    if (!userId || !confirmAction || isPending) {
+    if (
+      !userId ||
+      !confirmAction ||
+      isPending ||
+      submittingRef.current
+    ) {
       return;
     }
+
+    submittingRef.current = true;
 
     setError(null);
 
@@ -124,6 +130,9 @@ function ChatBlockMenu({
         error?.message ||
         "Unable to update blocking status"
       );
+
+    } finally {
+      submittingRef.current = false;
     }
   }
 
@@ -166,11 +175,10 @@ function ChatBlockMenu({
             type="button"
             onClick={openConfirmation}
             disabled={isPending}
-            className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
-              isBlocked
-                ? "text-green-400 hover:bg-green-950/40"
-                : "text-red-400 hover:bg-red-950/40"
-            }`}
+            className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${isBlocked
+              ? "text-green-400 hover:bg-green-950/40"
+              : "text-red-400 hover:bg-red-950/40"
+              }`}
           >
             {isBlocked ? (
               <ShieldCheck size={17} />
@@ -189,7 +197,7 @@ function ChatBlockMenu({
 
       <dialog
         ref={dialogRef}
-        aria-labelledby="block-dialog-title"
+        aria-labelledby={dialogTitleId}
         onCancel={(event) => {
           if (isPending) {
             event.preventDefault();
@@ -202,11 +210,10 @@ function ChatBlockMenu({
       >
         <div className="flex items-start gap-4">
           <div
-            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${
-              confirmingUnblock
-                ? "bg-green-500/10 text-green-400"
-                : "bg-red-500/10 text-red-400"
-            }`}
+            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${confirmingUnblock
+              ? "bg-green-500/10 text-green-400"
+              : "bg-red-500/10 text-red-400"
+              }`}
           >
             {confirmingUnblock ? (
               <ShieldCheck size={23} />
@@ -217,7 +224,7 @@ function ChatBlockMenu({
 
           <div className="min-w-0 flex-1">
             <h2
-              id="block-dialog-title"
+              id={dialogTitleId}
               className="break-words text-lg font-semibold text-white"
             >
               {confirmingUnblock
@@ -246,6 +253,7 @@ function ChatBlockMenu({
           <button
             type="button"
             autoFocus
+            aria-busy={isPending}
             disabled={isPending}
             onClick={closeConfirmation}
             className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-300 hover:bg-gray-800 disabled:opacity-50"
@@ -257,11 +265,10 @@ function ChatBlockMenu({
             type="button"
             onClick={handleConfirm}
             disabled={isPending}
-            className={`flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
-              confirmingUnblock
-                ? "bg-blue-600 hover:bg-blue-500"
-                : "bg-red-600 hover:bg-red-500"
-            }`}
+            className={`flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50 ${confirmingUnblock
+              ? "bg-blue-600 hover:bg-blue-500"
+              : "bg-red-600 hover:bg-red-500"
+              }`}
           >
             {isPending && (
               <LoaderCircle

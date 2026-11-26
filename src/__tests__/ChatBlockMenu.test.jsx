@@ -25,12 +25,23 @@ import {
 
 /* -------------------- MOCK BLOCK STORE -------------------- */
 
+const { create } = require("zustand");
+
 const mockBlock = jest.fn();
 const mockUnblock = jest.fn();
 
-let mockStoreState;
+function createMockStoreState() {
+  return {
+    block: mockBlock,
+    unblock: mockUnblock,
+    pendingUsers: {},
+    blockedUsers: [],
+    loading: false,
+    error: null,
+  };
+}
 
-const mockUseBlockStore = jest.fn((selector) => selector(mockStoreState));
+const mockUseBlockStore = create(createMockStoreState);
 
 jest.doMock("@/store/useBlockStore", () => ({
   __esModule: true,
@@ -59,9 +70,9 @@ beforeAll(() => {
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", "") };
 
   HTMLDialogElement.prototype.close = function () {
-      this.removeAttribute("open");
-      this.dispatchEvent(new Event("close"));
-    };
+    this.removeAttribute("open");
+    this.dispatchEvent(new Event("close"));
+  };
 });
 
 afterAll(() => {
@@ -88,7 +99,9 @@ function setup(overrides = {}) {
     ...overrides,
   };
 
-  const rendered = render(<ChatBlockMenu {...props} />);
+  const rendered = render(
+    <ChatBlockMenu {...props} />
+  );
 
   return {
     ...rendered,
@@ -96,16 +109,15 @@ function setup(overrides = {}) {
     updateProps(nextProps = {}) {
       Object.assign(props, nextProps);
 
-      rendered.rerender(<ChatBlockMenu {...props} />);
+      rendered.rerender(
+        <ChatBlockMenu {...props} />
+      );
     },
 
     updateStore(nextState = {}) {
-      mockStoreState = {
-        ...mockStoreState,
-        ...nextState,
-      };
-
-      rendered.rerender(<ChatBlockMenu {...props} />);
+      act(() => {
+        mockUseBlockStore.setState(nextState);
+      });
     },
   };
 }
@@ -145,7 +157,7 @@ function getConfirmButton(action = "block") {
 
   return within(getDialog()).getByRole(
     "button", { name: pattern }
-);
+  );
 }
 
 function getCancelButton() {
@@ -181,14 +193,10 @@ beforeEach(() => {
   mockBlock.mockResolvedValue(true);
   mockUnblock.mockResolvedValue(true);
 
-  mockStoreState = {
-    block: mockBlock,
-    unblock: mockUnblock,
-    pendingUsers: {},
-    blockedUsers: [],
-    loading: false,
-    error: null,
-  };
+  mockUseBlockStore.setState(
+    createMockStoreState(),
+    true
+  );
 });
 
 afterEach(() => {
@@ -286,8 +294,8 @@ describe("Menu behaviour", () => {
     fireEvent.pointerDown(document.body);
 
     expect(screen.queryByRole("button", {
-        name: /^block\b/i,
-      })
+      name: /^block\b/i,
+    })
     ).not.toBeInTheDocument();
   });
 
@@ -301,8 +309,8 @@ describe("Menu behaviour", () => {
     });
 
     expect(screen.queryByRole("button", {
-        name: /^block\b/i,
-      })
+      name: /^block\b/i,
+    })
     ).not.toBeInTheDocument();
   });
 });
@@ -587,15 +595,19 @@ describe("Pending operations", () => {
   });
 
   test("does not disable actions for unrelated pending users", () => {
-    mockStoreState.pendingUsers = {
-      [OTHER_USER_ID]: "block",
-    };
+    mockUseBlockStore.setState({
+      pendingUsers: {
+        [OTHER_USER_ID]: "block",
+      },
+    });
 
     setup();
 
     openConfirmation("block");
 
-    expect(getConfirmButton("block")).not.toBeDisabled();
+    expect(
+      getConfirmButton("block")
+    ).not.toBeDisabled();
   });
 
   test("prevents native dialog cancellation while pending", async () => {
@@ -677,7 +689,7 @@ describe("Error handling", () => {
 
   test("allows retrying a failed operation", async () => {
     mockBlock
-      .mockRejectedValueOnce( new Error("Operation failed"))
+      .mockRejectedValueOnce(new Error("Operation failed"))
       .mockResolvedValueOnce(true);
 
     setup();
