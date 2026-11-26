@@ -6,6 +6,14 @@
 
 // src/__tests__/messages.test.js
 
+import {
+  jest,
+  describe,
+  test,
+  expect,
+  beforeEach,
+} from "@jest/globals";
+
 /* -------------------- MOCKS -------------------- */
 
 jest.mock("@/lib/supabase/client", () => {
@@ -123,15 +131,10 @@ function expectedMessageParams(overrides = {}) {
 
 beforeEach(() => {
     jest.clearAllMocks();
-
     mockRpc.mockReset();
-
     mockSingle.mockReset();
-
     mockFrom.mockReset();
-
     mockGetUser.mockReset();
-
     mockGetUser.mockResolvedValue({
         data: {
             user: {

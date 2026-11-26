@@ -1,6 +1,12 @@
 // src/utils/__tests__/urlUtils.test.js
 
 import {
+  describe,
+  test,
+  expect,
+} from "@jest/globals";
+
+import {
   normalizeUrl,
   extractUrls,
   splitMessageText,

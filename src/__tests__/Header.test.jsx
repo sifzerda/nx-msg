@@ -4,6 +4,13 @@
 // auth users see Messages/Contacts
 // logout clears app state
 
+import {
+  jest,
+  describe,
+  test,
+  expect,
+  beforeEach,
+} from "@jest/globals";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import Header from "../components/Header";
 

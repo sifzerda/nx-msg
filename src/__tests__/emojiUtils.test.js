@@ -1,5 +1,10 @@
 // src/utils/__tests__/emojiUtils.test.js
 
+import {
+  describe,
+  test,
+  expect,
+} from "@jest/globals";
 import { insertEmoji } from "@/utils/emojiUtils";
 
 describe("insertEmoji", () => {
