@@ -1,4 +1,4 @@
-// src/components/ReactionPicker.jsx
+// src/components/extras/ReactionPicker.jsx
 
 "use client";
 

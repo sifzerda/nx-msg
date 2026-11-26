@@ -1,4 +1,4 @@
-// src/components/DateSeparator.jsx
+// src/components/extras/DateSeparator.jsx
 
 "use client";
 

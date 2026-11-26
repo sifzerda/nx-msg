@@ -1,4 +1,4 @@
-// src/components/QuotedMessage.jsx
+// src/components/extras/QuotedMessage.jsx
 
 "use client";
 

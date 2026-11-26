@@ -4,7 +4,7 @@
 
 import { createClient } from "@/lib/supabase/client";
 import { clearMessageProfileCache } from "@/lib/messageProfiles";
-import { clearAttachmentCache } from "@/lib/attachments";
+import { clearAttachmentCache } from "@/lib/extras/attachments";
 import useChatStore from "@/store/useChatStore";
 import useContactStore from "@/store/useContactStore";
 import usePresenceStore from "@/store/usePresenceStore";

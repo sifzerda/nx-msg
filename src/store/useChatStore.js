@@ -1,7 +1,7 @@
 // src/store/useChatStore.js
 
 import { create } from "zustand";
-import { uploadImage } from "@/lib/attachments";
+import { uploadImage } from "@/lib/extras/attachments";
 import {
   getConversations,
   getMessages,

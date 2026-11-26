@@ -4,10 +4,10 @@
 
 import { memo, useCallback, useMemo } from "react";
 import { Check, CheckCheck, Reply } from "lucide-react";
-import QuotedMessage from "./QuotedMessage";
-import ReactionPicker from "./ReactionPicker";
+import QuotedMessage from "./extras/QuotedMessage";
+import ReactionPicker from "./extras/ReactionPicker";
 import MessageReactions from "./MessageReactions";
-import ImageAttachment from "./ImageAttachment";
+import ImageAttachment from "./extras/ImageAttachment";
 
 const EMPTY_REACTIONS = [];
 const timeFormatter = new Intl.DateTimeFormat("en-AU", { hour: "numeric", minute: "2-digit" });

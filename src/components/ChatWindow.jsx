@@ -27,9 +27,9 @@ import { groupMessagesByDate } from "@/utils/messageDates";
 
 import MessageBubble from "./MessageBubble";
 import MessageInput from "./MessageInput";
-import TypingIndicator from "./TypingIndicator";
-import DateSeparator from "./DateSeparator";
-import ConversationSearch from "./ConversationSearch";
+import TypingIndicator from "./extras/TypingIndicator";
+import DateSeparator from "./extras/DateSeparator";
+import ConversationSearch from "./extras/ConversationSearch";
 
 const EMPTY_MESSAGES = [];
 const EMPTY_NAMES = [];

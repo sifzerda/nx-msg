@@ -1,4 +1,4 @@
-// src/components/ConversationSearch.jsx
+// src/components/extras/ConversationSearch.jsx
 
 "use client";
 
@@ -19,8 +19,7 @@ import {
 } from "lucide-react";
 
 import useConversationSearch from "@/hooks/useConversationSearch";
-
-import SearchResult from "./SearchResult";
+import SearchResult from "../SearchResult";
 
 function ConversationSearch({
   conversationId,

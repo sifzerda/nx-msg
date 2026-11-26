@@ -11,7 +11,7 @@ import {
 import {
   getAttachmentUrl,
   invalidateAttachmentUrl,
-} from "@/lib/attachments";
+} from "@/lib/extras/attachments";
 
 export default function useAttachmentUrl(path, userId) {
   const [state, setState] = useState({

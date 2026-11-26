@@ -15,7 +15,7 @@ import {
   addReaction,
   removeReaction,
   subscribeToReactions,
-} from "@/lib/reactions";
+} from "@/lib/extras/reactions";
 
 const EMPTY_REACTIONS = [];
 const EMPTY_MAP = new Map();

@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 
-import { createTypingChannel } from "@/lib/typing";
+import { createTypingChannel } from "@/lib/extras/typing";
 
 const BROADCAST_INTERVAL = 1000;
 const INACTIVITY_TIMEOUT = 2000;

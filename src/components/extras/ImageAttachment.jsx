@@ -1,4 +1,4 @@
-// src/components/ImageAttachment.jsx
+// src/components/extras/ImageAttachment.jsx
 
 "use client";
 
@@ -15,7 +15,6 @@ import {
 } from "lucide-react";
 
 import useAttachmentUrl from "@/hooks/useAttachmentUrl";
-
 import ImageViewer from "./ImageViewer";
 
 function ImageAttachment({

@@ -1,4 +1,4 @@
-// src/components/TypingIndicator.jsx
+// src/components/extras/TypingIndicator.jsx
 
 "use client";
 

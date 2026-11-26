@@ -1,4 +1,4 @@
-// src/components/ImageViewer.jsx
+// src/components/extras/ImageViewer.jsx
 
 "use client";
 

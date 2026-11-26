@@ -1,4 +1,4 @@
-// src/lib/attachments.js
+// src/lib/extras/attachments.js
 
 import { createClient } from "@/lib/supabase/client";
 

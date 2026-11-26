@@ -1,4 +1,4 @@
-// src/lib/typing.js
+// src/lib/extras/typing.js
 
 import { createClient } from "@/lib/supabase/client";
 

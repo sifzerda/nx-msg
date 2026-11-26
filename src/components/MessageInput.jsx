@@ -21,7 +21,7 @@ import { compressImage } from "@/utils/compressImage";
 import { ALLOWED_IMAGE_TYPES } from "@/constants/attachments";
 
 import ReplyPreview from "./ReplyPreview";
-import ImagePreview from "./ImagePreview";
+import ImagePreview from "./extras/ImagePreview";
 
 function MessageInput({
   onTyping,
