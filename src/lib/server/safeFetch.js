@@ -487,7 +487,7 @@ async function safeFetchResource(
     try {
         for (
             let redirectCount = 0;
-            redirectCount <= MAX_REDIRECTS;
+            redirectCount <= maxRedirects;
             redirectCount++
         ) {
             const { url, hostname } = validateTarget(currentUrl);
@@ -526,7 +526,7 @@ async function safeFetchResource(
                 if (
                     REDIRECT_STATUSES.has(response.status)
                 ) {
-                    if (redirectCount >= MAX_REDIRECTS) {
+                    if (redirectCount >= maxRedirects) {
                         throw new Error("Too many redirects");
                     }
 

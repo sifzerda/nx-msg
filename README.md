@@ -39,7 +39,6 @@ Basic social messaging app demo with dummy accounts.
 - conversation search 
 - YouTube-specific metadata provider
 
-
 - posted URL previews	
 - Block/unblock users
 - Contact requests
@@ -53,15 +52,15 @@ Basic social messaging app demo with dummy accounts.
 
 1.3 Security:
 
-Image signature integration
-SSRF and restricted IP verification
-Malicious redirect tests
-Shared request deadline
-Sensitive URL filtering
-Authentication and membership verification
-Database permissions and RLS verification
-Final automated tests
-Normal preview and cache verification
+- Image signature integration
+- SSRF and restricted IP verification
+- Malicious redirect tests
+- Shared request deadline
+- Sensitive URL filtering
+- Authentication and membership verification
+- Database permissions and RLS verification
+- Final automated tests
+- Normal preview and cache verification
 
 ## Badges
 
@@ -73,7 +72,7 @@ Normal preview and cache verification
 
 ## Visuals
 
-This app has been deployed to Vercel. Visit the site: [bitECS Asteroids](https://nx-msg.vercel.app/)
+This app has been deployed to Vercel. Visit the site: [Next Messenger](https://nx-msg.vercel.app/)
 
 ![pic1](...)
 ![pic2](...)
@@ -128,14 +127,3 @@ Distributed under the MIT License. See LICENSE.txt for more information.
 ## Project Status
 
 This project is incomplete and requires further development. 
-
-## Tasks
-
-- [x] profiles
-- [x] contacts
-- [x] p v p chat
-- [x] read receipts
-- [x] group chats
-- [x] notifications - web push
-- [x] tests
-- [ ] css, frontend stuff
