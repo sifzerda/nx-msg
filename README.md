@@ -44,11 +44,11 @@ Basic social messaging app demo with dummy accounts.
 - Block/unblock users
 - ~~Contact requests~~
 - ~~Invisible mode~~	
-- ~~Group @mentions	~~
--~~ Individual group read receipts	~~
+- ~~Group@mentions~~
+-~~Individual group read receipts~~
 - ~~Light/dark/system theme~~
 - ~~Notification sounds~~
-- ~~Progressive Web App	~~
+- ~~Progressive Web App~~
 - ~~Password recovery~~
 
 1.3 Security:
@@ -126,4 +126,4 @@ Distributed under the MIT License. See LICENSE.txt for more information.
 
 ## Project Status
 
-This project is complete but may receive additional features in future development. 
+This project is complete but may undergo further development.
