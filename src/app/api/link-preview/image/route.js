@@ -2,11 +2,12 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { getCachedPreview } from "@/lib/server/linkPreviewCache";
+import { getCachedPreview, PreviewBusyError } from "@/lib/server/linkPreviewCache";
 import { consumePreviewQuota } from "@/lib/server/linkPreviewRateLimit";
 import { getPreviewImage, ImagePreviewBusyError, ImagePreviewUnavailableError } from "@/lib/server/linkPreviewImage";
 import { extractUrls } from "@/utils/urlUtils";
 import { isPreviewAllowed } from "@/utils/previewUrlPolicy";
+import { PREVIEW_RATE_WINDOW } from "@/constants/linkPreviews";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,11 +15,13 @@ export const maxDuration = 20;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const RESPONSE_HEADERS = {
+const RESPONSE_HEADERS = Object.freeze({
     "Cache-Control": "private, no-store",
     "X-Content-Type-Options": "nosniff",
     "Cross-Origin-Resource-Policy": "same-origin",
-};
+});
+
+/* -------------------- RESPONSES -------------------- */
 
 function errorResponse(status, headers = {}) {
     return new Response(null, {
@@ -31,12 +34,14 @@ function errorResponse(status, headers = {}) {
     });
 }
 
+/* -------------------- API ENDPOINT -------------------- */
+
 export async function GET(request) {
     try {
-        // Reject cross-site image requests when
-        // browser Fetch Metadata is available.
+        /* -------------------- REQUEST VALIDATION -------------------- */
 
-        const fetchSite = request.headers.get("sec-fetch-site");
+        const fetchSite =
+            request.headers.get("sec-fetch-site");
 
         if (
             fetchSite &&
@@ -46,10 +51,13 @@ export async function GET(request) {
             return errorResponse(403);
         }
 
-        const messageId = new URL(request.url).searchParams.get("messageId");
+        const messageId = new URL(
+            request.url
+        ).searchParams.get("messageId");
 
         if (
-            !messageId || !UUID_PATTERN.test(messageId)
+            !messageId ||
+            !UUID_PATTERN.test(messageId)
         ) {
             return errorResponse(400);
         }
@@ -86,41 +94,39 @@ export async function GET(request) {
             return errorResponse(404);
         }
 
+        /* -------------------- MEMBERSHIP VERIFICATION -------------------- */
+
         const {
             data: isMember,
             error: membershipError,
-        } = await supabase.rpc(
-            "is_chat_member",
-            {
-                chat_id: message.conversation_id,
-            }
-        );
+        } = await supabase.rpc("is_chat_member", {
+            chat_id: message.conversation_id,
+        });
 
         if (membershipError) {
             return errorResponse(500);
         }
 
-        if (!isMember) {
+        if (isMember !== true) {
+            return errorResponse(404);
+        }
+
+        /* -------------------- URL VALIDATION -------------------- */
+
+        const [url] = extractUrls(message.content, 1);
+
+        if (!url || !isPreviewAllowed(url)) {
             return errorResponse(404);
         }
 
         /* -------------------- PREVIEW LOOKUP -------------------- */
 
-        /* Extract and validate the message URL */
-
-        const [url] = extractUrls(message.content, 1);
-
-        if (!url || !isPreviewAllowed(url)) {
-            return new Response(null, {
-                status: 404,
-                headers: {
-                    "Cache-Control": "private, no-store",
-                },
-            });
-        }
-
         const admin = createAdminClient();
-        const preview = await getCachedPreview(admin, url);
+
+        const preview = await getCachedPreview(
+            admin,
+            url
+        );
 
         if (
             !preview ||
@@ -128,27 +134,29 @@ export async function GET(request) {
             !preview.image_url ||
             !isPreviewAllowed(preview.image_url)
         ) {
-            return new Response(null, {
-                status: 404,
-                headers: {
-                    "Cache-Control": "private, no-store",
-                },
-            });
+            return errorResponse(404);
         }
 
         /* -------------------- RATE LIMIT -------------------- */
 
-        const allowed = await consumePreviewQuota(admin, user.id);
+        const allowed = await consumePreviewQuota(
+            admin,
+            user.id
+        );
 
         if (!allowed) {
             return errorResponse(429, {
-                "Retry-After": "60",
+                "Retry-After": String(PREVIEW_RATE_WINDOW),
             });
         }
 
         /* -------------------- IMAGE PROCESSING -------------------- */
 
-        const buffer = await getPreviewImage(preview.image_url);
+        const buffer = await getPreviewImage(
+            preview.image_url
+        );
+
+        /* -------------------- IMAGE RESPONSE -------------------- */
 
         return new Response(
             new Uint8Array(buffer),
@@ -159,26 +167,38 @@ export async function GET(request) {
                     ...RESPONSE_HEADERS,
 
                     "Content-Type": "image/webp",
-                    "Content-Length": String(buffer.byteLength),
-                    "Content-Security-Policy": "default-src 'none'; sandbox",
+
+                    "Content-Length": String(
+                        buffer.byteLength
+                    ),
+
+                    "Content-Security-Policy":
+                        "default-src 'none'; sandbox",
                 },
             }
         );
     } catch (error) {
-        if (error instanceof ImagePreviewBusyError) {
+        /* -------------------- ERROR HANDLING -------------------- */
+
+        if (
+            error instanceof ImagePreviewBusyError ||
+            error instanceof PreviewBusyError
+        ) {
             return errorResponse(503, {
                 "Retry-After": "5",
             });
         }
 
-        if (error instanceof ImagePreviewUnavailableError) {
+        if (
+            error instanceof ImagePreviewUnavailableError
+        ) {
             return errorResponse(404);
         }
 
         if (process.env.NODE_ENV === "development") {
             console.error("[LinkPreviewImage] Failed", {
-                name: error.name,
-                code: error.code,
+                name: error?.name,
+                code: error?.code,
             });
         }
 

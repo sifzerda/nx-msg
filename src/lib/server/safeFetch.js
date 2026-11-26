@@ -17,9 +17,7 @@ import {
     ALLOWED_IMAGE_CONTENT_TYPES,
     ALLOWED_JSON_CONTENT_TYPES,
 } from "@/constants/linkPreviews";
-import {
-    isPreviewAllowed,
-} from "@/utils/previewUrlPolicy";
+import { isPreviewAllowed } from "@/utils/previewUrlPolicy";
 
 const REDIRECT_STATUSES = new Set([
     301,
@@ -137,9 +135,7 @@ export function validateTarget(value) {
         .replace(/\.$/, "");
 
     if (
-        hostname === "localhost" ||
-        BLOCKED_HOST_SUFFIXES.some((suffix) =>
-            hostname.endsWith(suffix)
+        hostname === "localhost" || BLOCKED_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix)
         )
     ) {
         throw new Error("Blocked hostname");
