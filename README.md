@@ -27,6 +27,7 @@ Basic social messaging app demo with dummy accounts.
 - Send and receive messages
 - Create a group chat
 - Web push notifications
+- Block users
 
 1.2 Extras:
 
