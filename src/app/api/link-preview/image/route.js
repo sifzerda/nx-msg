@@ -40,8 +40,7 @@ export async function GET(request) {
     try {
         /* -------------------- REQUEST VALIDATION -------------------- */
 
-        const fetchSite =
-            request.headers.get("sec-fetch-site");
+        const fetchSite = request.headers.get("sec-fetch-site");
 
         if (
             fetchSite &&
@@ -51,9 +50,7 @@ export async function GET(request) {
             return errorResponse(403);
         }
 
-        const messageId = new URL(
-            request.url
-        ).searchParams.get("messageId");
+        const messageId = new URL(request.url).searchParams.get("messageId");
 
         if (
             !messageId ||
