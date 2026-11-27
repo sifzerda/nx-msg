@@ -44,12 +44,12 @@ Basic social messaging app demo with dummy accounts.
 - Block/unblock users
 - ~~Contact requests~~
 - ~~Invisible mode~~	
-- ~~Group@mentions~~
--~~Individual group read receipts~~
-- ~~Light/dark/system theme~~
-- ~~Notification sounds~~
-- ~~Progressive Web App~~
-- ~~Password recovery~~
+- Group@mentions
+- Individual group read receipts
+- themes
+- Notification sounds
+- Progressive Web App
+- Password recovery
 
 1.3 Security:
 

@@ -8,23 +8,14 @@ export const metadata = { title: "Settings | Messenger", description: "Manage yo
 
 export default async function SettingsPage() {
     const supabase = await createClient();
-
-    const {
-        data: { user },
-        error,
-    } = await supabase.auth.getUser();
+    const { data: { user }, error } = await supabase.auth.getUser();
 
     if (error || !user) {
         redirect("/login");
     }
 
-    // Only pass the account information required
-    // by the client component.
-
-    const account = {
-        id: user.id,
-        email: user.email ?? null,
-    };
+    // Only pass the account information required by the client component.
+    const account = { id: user.id, email: user.email ?? null };
 
     return (
         <div className="h-full min-w-0 overflow-y-auto bg-gray-950 px-4 py-6 text-white sm:px-6 lg:px-8">
@@ -42,9 +33,7 @@ export default async function SettingsPage() {
 
                     <div className="min-w-0">
 
-                        <h1 className="text-2xl font-semibold text-white">
-                            Settings
-                        </h1>
+                        <h1 className="text-2xl font-semibold text-white">Settings</h1>
 
                         <p className="mt-1 text-sm text-gray-400">
                             Manage your account and application preferences.

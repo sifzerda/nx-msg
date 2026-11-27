@@ -2,10 +2,11 @@
 
 import { Geist, Geist_Mono } from "next/font/google";
 import { createClient } from "@/lib/supabase/server";
-
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import PushNotificationInitializer from "@/components/PushNotificationInitializer";
+import ThemeProvider from "@/theme/ThemeProvider";
+import AppearanceScript from "@/theme/AppearanceScript";
 
 import "./globals.css";
 
@@ -60,29 +61,38 @@ export default async function RootLayout({ children }) {
   return (
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable}`}
     >
-      <body className="flex h-dvh flex-col overflow-hidden bg-gray-950 text-white">
+      <head>
+        <AppearanceScript />
+      </head>
 
-        {/* Background notification management */}
+      <body className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
 
-        <PushNotificationInitializer
-          userId={currentUser?.id ?? null}
-        />
+        <ThemeProvider>
 
-        {/* Application header */}
+          {/* Background notification management */}
 
-        <Header user={currentUser} />
+          <PushNotificationInitializer
+            userId={currentUser?.id ?? null}
+          />
 
-        {/* Page content */}
+          {/* Application header */}
 
-        <main className="min-h-0 flex-1 overflow-hidden">
-          {children}
-        </main>
+          <Header user={currentUser} />
 
-        {/* Application footer */}
+          {/* Page content */}
 
-        <Footer user={currentUser} />
+          <main className="min-h-0 flex-1 overflow-hidden">
+            {children}
+          </main>
+
+          {/* Application footer */}
+
+          <Footer user={currentUser} />
+
+        </ThemeProvider>
 
       </body>
     </html>
