@@ -8,14 +8,6 @@ export const SEARCH_PAGE_SIZE = 30;
 export const MIN_SEARCH_LENGTH = 2;
 export const MAX_SEARCH_LENGTH = 200;
 
-function emptyResults() {
-  return {
-    results: [],
-    hasMore: false,
-    nextCursor: null,
-  };
-}
-
 export async function searchMessages({
   conversationId,
   query = "",
@@ -23,14 +15,18 @@ export async function searchMessages({
   signal,
 }) {
   const searchQuery = query.trim();
-  const queryLength = Array.from(searchQuery).length;
+  const length = Array.from(searchQuery).length;
 
   if (
     !conversationId ||
-    queryLength < MIN_SEARCH_LENGTH ||
-    queryLength > MAX_SEARCH_LENGTH
+    length < MIN_SEARCH_LENGTH ||
+    length > MAX_SEARCH_LENGTH
   ) {
-    return emptyResults();
+    return {
+      results: [],
+      hasMore: false,
+      nextCursor: null,
+    };
   }
 
   if (
@@ -58,18 +54,21 @@ export async function searchMessages({
 
   const rows = data ?? [];
   const hasMore = rows.length > SEARCH_PAGE_SIZE;
-  const results = rows.slice(0, SEARCH_PAGE_SIZE);
-  const lastResult = results[results.length - 1];
+
+  const results = hasMore
+    ? rows.slice(0, SEARCH_PAGE_SIZE)
+    : rows;
+
+  const last = results.at(-1);
 
   return {
     results,
     hasMore,
-    nextCursor:
-      hasMore && lastResult
-        ? {
-            created_at: lastResult.created_at,
-            id: lastResult.id,
-          }
-        : null,
+    nextCursor: hasMore
+      ? {
+          created_at: last.created_at,
+          id: last.id,
+        }
+      : null,
   };
 }

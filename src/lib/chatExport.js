@@ -1,6 +1,7 @@
 // src/lib/chatExport.js
 
 import { createClient } from "@/lib/supabase/client";
+import { getMessageProfiles } from "@/lib/messageProfiles";
 
 import {
   formatExportDate,
@@ -10,7 +11,6 @@ import {
 } from "@/utils/chatExportFormat";
 
 const PAGE_SIZE = 500;
-const PROFILE_BATCH_SIZE = 100;
 
 const MESSAGE_COLUMNS = [
   "id",
@@ -26,10 +26,9 @@ const MESSAGE_COLUMNS = [
   "attachment_mime_type",
 ].join(", ");
 
-async function verifyMembership(
-  supabase,
-  conversationId
-) {
+/* -------------------- AUTHORIZATION -------------------- */
+
+async function verifyMembership(supabase, conversationId) {
   const {
     data: { user },
     error: authError,
@@ -39,10 +38,7 @@ async function verifyMembership(
     throw new Error("You must be logged in");
   }
 
-  const {
-    data: membership,
-    error,
-  } = await supabase
+  const { data: membership, error } = await supabase
     .from("conversation_members")
     .select("user_id")
     .eq("conversation_id", conversationId)
@@ -60,6 +56,8 @@ async function verifyMembership(
   return user;
 }
 
+/* -------------------- MESSAGE RETRIEVAL -------------------- */
+
 async function getExportMessages(
   supabase,
   conversationId,
@@ -75,21 +73,14 @@ async function getExportMessages(
       .select(MESSAGE_COLUMNS)
       .eq("conversation_id", conversationId)
       .lte("created_at", exportedAt)
-      .order("created_at", {
-        ascending: true,
-      })
-      .order("id", {
-        ascending: true,
-      })
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
       .limit(PAGE_SIZE);
 
-    // Keyset pagination.
     if (cursor) {
       request = request.or(
-        [
-          `created_at.gt.${cursor.created_at}`,
-          `and(created_at.eq.${cursor.created_at},id.gt.${cursor.id})`,
-        ].join(",")
+        `created_at.gt.${cursor.created_at},` +
+        `and(created_at.eq.${cursor.created_at},id.gt.${cursor.id})`
       );
     }
 
@@ -99,66 +90,50 @@ async function getExportMessages(
 
     const rows = data ?? [];
 
-    if (!rows.length) break;
-
     messages.push(...rows);
 
-    const lastMessage = rows[rows.length - 1];
-
-    cursor = {
-      created_at: lastMessage.created_at,
-      id: lastMessage.id,
-    };
-
     if (rows.length < PAGE_SIZE) break;
+
+    cursor = rows.at(-1);
   }
 
   return messages;
 }
 
-async function getExportProfiles(
-  supabase,
-  messages
-) {
-  const senderIds = [
-    ...new Set(
-      messages
-        .map((message) => message.sender_id)
-        .filter(Boolean)
-    ),
-  ];
+/* -------------------- PROFILE RETRIEVAL -------------------- */
+
+async function getExportProfiles(messages) {
+  const senderIds = new Set();
+
+  for (const message of messages) {
+    if (message.sender_id) {
+      senderIds.add(message.sender_id);
+    }
+  }
+
+  const profiles = await getMessageProfiles(
+    [...senderIds]
+  );
 
   const profileMap = new Map();
 
-  for (
-    let index = 0;
-    index < senderIds.length;
-    index += PROFILE_BATCH_SIZE
-  ) {
-    const ids = senderIds.slice(
-      index,
-      index + PROFILE_BATCH_SIZE
+  for (const id of senderIds) {
+    const profile = profiles[id];
+
+    if (!profile) continue;
+
+    profileMap.set(
+      id,
+      profile.display_name?.trim() ||
+        profile.username?.trim() ||
+        id
     );
-
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("id, username, display_name")
-      .in("id", ids);
-
-    if (error) throw error;
-
-    for (const profile of data ?? []) {
-      profileMap.set(
-        profile.id,
-        profile.display_name?.trim() ||
-          profile.username?.trim() ||
-          profile.id
-      );
-    }
   }
 
   return profileMap;
 }
+
+/* -------------------- EXPORT FORMATTING -------------------- */
 
 function getConversationName(conversation) {
   return (
@@ -169,30 +144,6 @@ function getConversationName(conversation) {
   );
 }
 
-function buildExportHeader({
-  chatName,
-  conversation,
-  exportedAt,
-  messageCount,
-}) {
-  return [
-    `Chat: ${chatName}`,
-    `Type: ${
-      conversation.type === "group"
-        ? "Group conversation"
-        : "Private conversation"
-    }`,
-    `Exported: ${formatExportDate(exportedAt)}`,
-    `Total messages: ${messageCount}`,
-    "",
-    "Media attachments are represented by metadata.",
-    "Image, file and GIF contents are not embedded.",
-    "",
-    "----------------------------------------",
-    "",
-  ].join("\r\n");
-}
-
 function buildExportParts({
   conversation,
   chatName,
@@ -200,22 +151,32 @@ function buildExportParts({
   messages,
   profileMap,
 }) {
-  const messageMap = new Map(
-    messages.map((message) => [
-      message.id,
-      message,
-    ])
-  );
+  const messageMap = new Map();
+
+  for (const message of messages) {
+    messageMap.set(message.id, message);
+  }
+
+  const type =
+    conversation.type === "group"
+      ? "Group conversation"
+      : "Private conversation";
 
   const parts = [
     "\uFEFF",
-    buildExportHeader({
-      conversation,
-      chatName,
-      exportedAt,
-      messageCount: messages.length,
-    }),
-    "\r\n",
+    [
+      `Chat: ${chatName}`,
+      `Type: ${type}`,
+      `Exported: ${formatExportDate(exportedAt)}`,
+      `Total messages: ${messages.length}`,
+      "",
+      "Media attachments are represented by metadata.",
+      "Image, file and GIF contents are not embedded.",
+      "",
+      "----------------------------------------",
+      "",
+      "",
+    ].join("\r\n"),
   ];
 
   for (const message of messages) {
@@ -228,22 +189,16 @@ function buildExportParts({
       message.created_at
     );
 
-    parts.push(
-      `[${timestamp}] ${sender}:\r\n`
-    );
-
     const reply = formatExportReply(
       message,
       messageMap,
       profileMap
     );
 
-    if (reply) {
-      parts.push(reply, "\r\n");
-    }
-
     parts.push(
-      formatExportMessage(message),
+      `[${timestamp}] ${sender}:\r\n` +
+      (reply ? `${reply}\r\n` : "") +
+      formatExportMessage(message) +
       "\r\n\r\n"
     );
   }
@@ -251,13 +206,14 @@ function buildExportParts({
   return parts;
 }
 
+/* -------------------- DOWNLOAD -------------------- */
+
 function downloadExport(parts, filename) {
   const blob = new Blob(parts, {
     type: "text/plain;charset=utf-8",
   });
 
   const url = URL.createObjectURL(blob);
-
   const link = document.createElement("a");
 
   link.href = url;
@@ -275,22 +231,20 @@ function downloadExport(parts, filename) {
   }
 }
 
+/* -------------------- PUBLIC INTERFACE -------------------- */
+
 export async function exportChatLog(conversation) {
   if (!conversation?.id) {
-    throw new Error(
-      "No conversation selected"
-    );
+    throw new Error("No conversation selected");
   }
 
   const supabase = createClient();
 
-  await verifyMembership(
+  const user = await verifyMembership(
     supabase,
     conversation.id
   );
 
-  // Exclude newly timestamped messages that arrive
-  // after the export starts.
   const exportedAt = new Date().toISOString();
 
   const messages = await getExportMessages(
@@ -299,14 +253,19 @@ export async function exportChatLog(conversation) {
     exportedAt
   );
 
-  const profileMap = await getExportProfiles(
-    supabase,
-    messages
-  );
+  const profileMap = await getExportProfiles(messages);
 
-  const chatName = getConversationName(
-    conversation
-  );
+  // Ensure the account has not changed during export.
+  const {
+    data: { user: currentUser },
+    error,
+  } = await supabase.auth.getUser();
+
+  if (error || currentUser?.id !== user.id) {
+    throw new Error("Your session changed during export");
+  }
+
+  const chatName = getConversationName(conversation);
 
   const parts = buildExportParts({
     conversation,

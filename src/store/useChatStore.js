@@ -11,7 +11,7 @@ import {
   validateMessage,
 } from "@/lib/messages";
 
-import { uploadAttachment } from "@/lib/attachments";
+import { uploadAttachment } from "@/lib/extras/attachments";
 
 /* -------------------- INITIAL STATE -------------------- */
 
