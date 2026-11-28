@@ -5,7 +5,9 @@
 import { useEffect } from "react";
 
 import { createClient } from "@/lib/supabase/client";
-
+import {
+  initializeNotificationSounds,
+} from "@/lib/notificationSounds";
 import {
   resetApplication,
   isLoggingOut,
@@ -17,6 +19,12 @@ import usePushStore from "@/store/usePushStore";
 export default function SessionInitializer({
   userId = null,
 }) {
+  useEffect(() => {
+    if (!userId) return;
+
+    return initializeNotificationSounds();
+  }, [userId]);
+
   useEffect(() => {
     const supabase = createClient();
 

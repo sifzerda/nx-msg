@@ -765,6 +765,57 @@ function MessageInput({
         className="flex min-w-0 items-center gap-1 p-2 sm:gap-3 sm:p-4"
       >
         <input
+          ref={fileInputRef}
+          type="file"
+          accept={FILE_ACCEPT}
+          onChange={handleFileSelection}
+          disabled={pickerDisabled}
+          hidden
+        />
+
+        <PickerButton
+          label="Attach a file"
+          active={Boolean(attachment)}
+          disabled={pickerDisabled}
+          onClick={openFilePicker}
+        >
+          {processing ? (
+            <LoaderCircle
+              size={22}
+              className="animate-spin"
+            />
+          ) : (
+            <Paperclip size={22} />
+          )}
+        </PickerButton>
+
+        <PickerButton
+          label="Choose an emoji"
+          active={emojiPickerOpen}
+          expanded={emojiPickerOpen}
+          disabled={pickerDisabled}
+          onClick={() =>
+            togglePicker(COMPOSER_PICKER.EMOJI)
+          }
+        >
+          <Smile size={22} />
+        </PickerButton>
+
+        <PickerButton
+          label="Choose a GIF"
+          active={gifPickerOpen || Boolean(selectedGif)}
+          expanded={gifPickerOpen}
+          disabled={pickerDisabled}
+          onClick={() =>
+            togglePicker(COMPOSER_PICKER.GIF)
+          }
+        >
+          <span className="rounded border border-current px-1 py-0.5 text-[10px] font-bold leading-none">
+            GIF
+          </span>
+        </PickerButton>
+
+        <input
           ref={inputRef}
           type="text"
           value={text}
@@ -804,55 +855,6 @@ function MessageInput({
           className="block min-w-0 flex-1 rounded-xl border border-gray-700 bg-gray-800 px-3 py-3 text-white placeholder-gray-400 outline-none transition-colors focus:border-blue-500 sm:px-4"
         />
 
-        <PickerButton
-          label="Attach a file"
-          active={Boolean(attachment)}
-          disabled={pickerDisabled}
-          onClick={openFilePicker}
-        >
-          {processing ? (
-            <LoaderCircle size={22} className="animate-spin" />
-          ) : (
-            <Paperclip size={22} />
-          )}
-        </PickerButton>
-
-        <PickerButton
-          label="Choose an emoji"
-          active={emojiPickerOpen}
-          expanded={emojiPickerOpen}
-          disabled={pickerDisabled}
-          onClick={() => togglePicker(COMPOSER_PICKER.EMOJI)}
-        >
-          <Smile size={22} />
-        </PickerButton>
-
-        <PickerButton
-          label="Choose a GIF"
-          active={gifPickerOpen || Boolean(selectedGif)}
-          expanded={gifPickerOpen}
-          disabled={pickerDisabled}
-          onClick={() => togglePicker(COMPOSER_PICKER.GIF)}
-        >
-          <span className="rounded border border-current px-1 py-0.5 text-[10px] font-bold leading-none">
-            GIF
-          </span>
-        </PickerButton>
-
-        <input
-          ref={inputRef}
-          type="text"
-          value={text}
-          onChange={handleChange}
-          onSelect={rememberCursor}
-          onBlur={handleBlur}
-          placeholder={placeholder}
-          maxLength={MAX_MESSAGE_LENGTH}
-          autoComplete="off"
-          aria-label="Message"
-          className="block min-w-0 flex-1 rounded-xl border border-gray-700 bg-gray-800 px-3 py-3 text-white placeholder-gray-400 outline-none transition-colors focus:border-blue-500 sm:px-4"
-        />
-
         <button
           type="submit"
           disabled={!canSend}
@@ -860,7 +862,10 @@ function MessageInput({
           className="flex shrink-0 items-center justify-center rounded-xl bg-blue-600 p-3 text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {sending ? (
-            <LoaderCircle size={20} className="animate-spin" />
+            <LoaderCircle
+              size={20}
+              className="animate-spin"
+            />
           ) : (
             <Send size={20} />
           )}

@@ -24,6 +24,9 @@ export default async function LoginPage({
     <AuthForm
       mode="login"
       registered={params?.registered === "true"}
+      passwordReset={
+        params?.passwordReset === "true"
+      }
     />
   );
 }

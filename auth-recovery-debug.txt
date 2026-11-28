@@ -1,0 +1,873 @@
+
+// C:\Users\tydam\bootcamp\nx-msg\src\app\login\page.js
+
+// src/app/login/page.js
+
+import { redirect } from "next/navigation";
+
+import { getAuthUser } from "@/lib/supabase/server";
+import AuthForm from "@/components/AuthForm";
+
+export const metadata = {
+  title: "Login | Messenger",
+};
+
+export default async function LoginPage({
+  searchParams,
+}) {
+  const user = await getAuthUser();
+
+  if (user) {
+    redirect("/messages");
+  }
+
+  const params = await searchParams;
+
+  return (
+    <AuthForm
+      mode="login"
+      registered={params?.registered === "true"}
+    />
+  );
+}
+
+// C:\Users\tydam\bootcamp\nx-msg\src\app\register\page.js
+
+// src/app/register/page.js
+
+import { redirect } from "next/navigation";
+
+import { getAuthUser } from "@/lib/supabase/server";
+import AuthForm from "@/components/AuthForm";
+
+export const metadata = {
+  title: "Register | Messenger",
+};
+
+export default async function RegisterPage() {
+  const user = await getAuthUser();
+
+  if (user) {
+    redirect("/messages");
+  }
+
+  return <AuthForm mode="register" />;
+}
+
+// C:\Users\tydam\bootcamp\nx-msg\src\components\AuthForm.jsx
+
+// src/components/AuthForm.jsx
+
+"use client";
+
+import { useRef, useState } from "react";
+import Link from "next/link";
+import { LoaderCircle } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
+import { notifySessionChange } from "@/lib/logout";
+
+const INPUT_CLASS = "w-full rounded-lg border border-gray-700 bg-gray-800 p-3 text-white outline-none focus:border-blue-500 disabled:opacity-50";
+
+const FORM_CONFIG = {
+    login: {
+        title: "Welcome Back",
+        submitLabel: "Log In",
+        loadingLabel: "Logging in...",
+        passwordAutoComplete: "current-password",
+        alternateText: "Don't have an account?",
+        alternateHref: "/register",
+        alternateLabel: "Register",
+    },
+
+    register: {
+        title: "Create Account",
+        submitLabel: "Register",
+        loadingLabel: "Creating account...",
+        passwordAutoComplete: "new-password",
+        alternateText: "Already registered?",
+        alternateHref: "/login",
+        alternateLabel: "Log in",
+    },
+};
+
+export default function AuthForm({
+    mode = "login",
+    registered = false,
+}) {
+    const isRegister = mode === "register";
+    const config = FORM_CONFIG[mode];
+
+    const submittingRef = useRef(false);
+
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState("");
+
+    async function handleSubmit(event) {
+        event.preventDefault();
+
+        if (submittingRef.current) return;
+
+        const formData = new FormData(
+            event.currentTarget
+        );
+
+        const email = String(
+            formData.get("email") ?? ""
+        ).trim();
+
+        const password = String(
+            formData.get("password") ?? ""
+        );
+
+        const confirmPassword = String(
+            formData.get("confirmPassword") ?? ""
+        );
+
+        setError("");
+
+        if (!email || !password) {
+            setError("Email and password are required.");
+            return;
+        }
+
+        if (isRegister) {
+            if (password.length < 6) {
+                setError(
+                    "Password must contain at least 6 characters."
+                );
+                return;
+            }
+
+            if (password !== confirmPassword) {
+                setError("Passwords do not match.");
+                return;
+            }
+        }
+
+        submittingRef.current = true;
+        setLoading(true);
+
+        let navigating = false;
+
+        try {
+            const supabase = createClient();
+
+            const credentials = {
+                email,
+                password,
+            };
+
+            const { data, error: authError } =
+                isRegister
+                    ? await supabase.auth.signUp(credentials)
+                    : await supabase.auth.signInWithPassword(
+                        credentials
+                    );
+
+            if (authError) {
+                throw authError;
+            }
+
+            if (!isRegister && !data.session) {
+                throw new Error(
+                    "Unable to establish an authenticated session."
+                );
+            }
+
+            const destination =
+                isRegister && !data.session
+                    ? "/login?registered=true"
+                    : "/messages";
+
+            if (data.session) {
+                notifySessionChange();
+            }
+
+            window.location.replace(destination);
+
+            navigating = true;
+
+        } catch (error) {
+            setError(
+                error?.message ||
+                "Authentication failed. Please try again."
+            );
+        } finally {
+            if (!navigating) {
+                submittingRef.current = false;
+                setLoading(false);
+            }
+        }
+    }
+
+    return (
+        <div className="flex h-full min-h-0 items-center justify-center overflow-y-auto bg-gray-950 px-4 py-6">
+            <form
+                onSubmit={handleSubmit}
+                aria-busy={loading}
+                className="my-auto w-full max-w-md space-y-5 rounded-2xl border border-gray-800 bg-gray-900 p-6 sm:p-8"
+            >
+                <h1 className="text-center text-3xl font-bold text-white">
+                    {config.title}
+                </h1>
+
+                {!isRegister && registered && (
+                    <p
+                        role="status"
+                        className="rounded-lg border border-green-500/20 bg-green-500/10 p-3 text-sm text-green-400"
+                    >
+                        Registration submitted. Check your email
+                        for a confirmation link before logging in.
+                    </p>
+                )}
+
+                <fieldset
+                    disabled={loading}
+                    className="min-w-0 space-y-4"
+                >
+                    <div className="space-y-2">
+                        <label
+                            htmlFor="email"
+                            className="text-sm text-gray-300"
+                        >
+                            Email address
+                        </label>
+
+                        <input
+                            id="email"
+                            name="email"
+                            type="email"
+                            placeholder="Email address"
+                            autoComplete="email"
+                            required
+                            className={INPUT_CLASS}
+                        />
+                    </div>
+
+                    <div className="space-y-2">
+                        <label
+                            htmlFor="password"
+                            className="text-sm text-gray-300"
+                        >
+                            Password
+                        </label>
+
+                        <input
+                            id="password"
+                            name="password"
+                            type="password"
+                            placeholder="Password"
+                            autoComplete={
+                                config.passwordAutoComplete
+                            }
+                            minLength={
+                                isRegister ? 6 : undefined
+                            }
+                            required
+                            className={INPUT_CLASS}
+                        />
+                    </div>
+
+                    {isRegister && (
+                        <div className="space-y-2">
+                            <label
+                                htmlFor="confirmPassword"
+                                className="text-sm text-gray-300"
+                            >
+                                Confirm password
+                            </label>
+
+                            <input
+                                id="confirmPassword"
+                                name="confirmPassword"
+                                type="password"
+                                placeholder="Confirm password"
+                                autoComplete="new-password"
+                                required
+                                className={INPUT_CLASS}
+                            />
+                        </div>
+                    )}
+                </fieldset>
+
+                {error && (
+                    <p
+                        role="alert"
+                        className="text-sm text-red-400"
+                    >
+                        {error}
+                    </p>
+                )}
+
+                <button
+                    type="submit"
+                    disabled={loading}
+                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 p-3 font-semibold text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                    {loading && (
+                        <LoaderCircle
+                            size={18}
+                            className="animate-spin"
+                            aria-hidden="true"
+                        />
+                    )}
+
+                    {loading
+                        ? config.loadingLabel
+                        : config.submitLabel}
+                </button>
+
+                <p className="text-center text-sm text-gray-400">
+                    {config.alternateText}{" "}
+
+                    <Link
+                        href={config.alternateHref}
+                        prefetch={false}
+                        className="text-blue-400 hover:underline"
+                    >
+                        {config.alternateLabel}
+                    </Link>
+                </p>
+            </form>
+        </div>
+    );
+}
+
+// C:\Users\tydam\bootcamp\nx-msg\src\components\SessionInitializer.jsx
+
+// src/components/SessionInitializer.jsx
+
+"use client";
+
+import { useEffect } from "react";
+
+import { createClient } from "@/lib/supabase/client";
+import {
+  initializeNotificationSounds,
+} from "@/lib/notificationSounds";
+import {
+  resetApplication,
+  isLoggingOut,
+  SESSION_CHANGE_KEY,
+} from "@/lib/logout";
+
+import usePushStore from "@/store/usePushStore";
+
+export default function SessionInitializer({
+  userId = null,
+}) {
+  useEffect(() => {
+    if (!userId) return;
+
+    return initializeNotificationSounds();
+  }, [userId]);
+
+  useEffect(() => {
+    const supabase = createClient();
+
+    let active = true;
+    let reloading = false;
+    let reloadTimer = null;
+
+    /* -------------------- SESSION CHANGE -------------------- */
+
+    function reloadSession() {
+      if (
+        !active ||
+        reloading ||
+        isLoggingOut()
+      ) {
+        return;
+      }
+
+      reloading = true;
+
+      // Run outside the Supabase authentication callback.
+      reloadTimer = window.setTimeout(() => {
+        if (!active) return;
+
+        if (isLoggingOut()) {
+          reloading = false;
+          return;
+        }
+
+        try {
+          resetApplication();
+        } finally {
+          window.location.reload();
+        }
+      }, 0);
+    }
+
+    /* -------------------- AUTHENTICATION EVENTS -------------------- */
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        if (!active || reloading) return;
+
+        if (
+          event === "INITIAL_SESSION" ||
+          event === "TOKEN_REFRESHED"
+        ) {
+          return;
+        }
+
+        if (
+          event !== "SIGNED_IN" &&
+          event !== "SIGNED_OUT"
+        ) {
+          return;
+        }
+
+        const nextUserId =
+          session?.user?.id ?? null;
+
+        if (nextUserId !== userId) {
+          reloadSession();
+        }
+      }
+    );
+
+    /* -------------------- CROSS-TAB EVENTS -------------------- */
+
+    function handleStorage(event) {
+      if (
+        event.key === SESSION_CHANGE_KEY &&
+        event.newValue
+      ) {
+        reloadSession();
+      }
+    }
+
+    window.addEventListener(
+      "storage",
+      handleStorage
+    );
+
+    /* -------------------- PUSH INITIALISATION -------------------- */
+
+    const pushStore = usePushStore.getState();
+
+    if (userId) {
+      void pushStore.initialize(userId);
+    } else {
+      pushStore.reset();
+    }
+
+    /* -------------------- CLEANUP -------------------- */
+
+    return () => {
+      active = false;
+
+      subscription.unsubscribe();
+
+      window.removeEventListener(
+        "storage",
+        handleStorage
+      );
+
+      if (reloadTimer !== null) {
+        window.clearTimeout(reloadTimer);
+      }
+    };
+  }, [userId]);
+
+  return null;
+}
+
+// C:\Users\tydam\bootcamp\nx-msg\src\lib\supabase\admin.js
+
+// src/lib/supabase/admin.js
+
+import "server-only";
+
+import { createClient } from "@supabase/supabase-js";
+
+let adminClient = null;
+
+export function createAdminClient() {
+  if (adminClient) {
+    return adminClient;
+  }
+
+  const url =
+    process.env.NEXT_PUBLIC_SUPABASE_URL;
+
+  const serviceRoleKey =
+    process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !serviceRoleKey) {
+    throw new Error(
+      "Missing Supabase admin environment variables"
+    );
+  }
+
+  adminClient = createClient(
+    url,
+    serviceRoleKey,
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+        detectSessionInUrl: false,
+      },
+    }
+  );
+
+  return adminClient;
+}
+
+// C:\Users\tydam\bootcamp\nx-msg\src\lib\supabase\client.js
+
+// src/lib/supabase/client.js
+
+import { createBrowserClient } from "@supabase/ssr";
+
+export function createClient() {
+  return createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+  );
+}
+
+// C:\Users\tydam\bootcamp\nx-msg\src\lib\supabase\proxy.js
+
+// src/lib/supabase/proxy.js
+
+import { createServerClient } from "@supabase/ssr";
+import { NextResponse } from "next/server";
+
+const SUPABASE_URL =
+  process.env.NEXT_PUBLIC_SUPABASE_URL;
+
+const SUPABASE_KEY =
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+
+export async function updateSession(request) {
+  let response = NextResponse.next({ request });
+
+  const supabase = createServerClient(
+    SUPABASE_URL,
+    SUPABASE_KEY,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+
+        setAll(cookiesToSet) {
+          if (!cookiesToSet.length) return;
+
+          for (const { name, value } of cookiesToSet) {
+            request.cookies.set(name, value);
+          }
+
+          const updatedResponse =
+            NextResponse.next({ request });
+
+          // Preserve any cookies already written during
+          // this session refresh operation.
+          for (const cookie of response.cookies.getAll()) {
+            updatedResponse.cookies.set(cookie);
+          }
+
+          for (const {
+            name,
+            value,
+            options,
+          } of cookiesToSet) {
+            updatedResponse.cookies.set(
+              name,
+              value,
+              options
+            );
+          }
+
+          response = updatedResponse;
+        },
+      },
+    }
+  );
+
+  await supabase.auth.getClaims();
+
+  return response;
+}
+
+// C:\Users\tydam\bootcamp\nx-msg\src\lib\supabase\server.js
+
+// src/lib/supabase/server.js
+
+import "server-only";
+
+import { cache } from "react";
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+
+const SUPABASE_URL =
+  process.env.NEXT_PUBLIC_SUPABASE_URL;
+
+const SUPABASE_KEY =
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+
+/* -------------------- SERVER CLIENT -------------------- */
+
+export const createClient = cache(async () => {
+  const cookieStore = await cookies();
+
+  return createServerClient(
+    SUPABASE_URL,
+    SUPABASE_KEY,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll();
+        },
+
+        setAll(cookiesToSet) {
+          try {
+            for (const {
+              name,
+              value,
+              options,
+            } of cookiesToSet) {
+              cookieStore.set(name, value, options);
+            }
+          } catch {
+            // Server Components cannot write cookies.
+            // The proxy handles session refresh.
+          }
+        },
+      },
+    }
+  );
+});
+
+/* -------------------- AUTHENTICATION -------------------- */
+
+export const getAuthUser = cache(async () => {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+
+  return error ? null : user ?? null;
+});
+
+/* -------------------- PROTECTED ROUTES -------------------- */
+
+export async function requireUser() {
+  const user = await getAuthUser();
+
+  if (!user) {
+    redirect("/login");
+  }
+
+  return user;
+}
+
+/* -------------------- DISPLAY PROFILE -------------------- */
+
+export const getCurrentUser = cache(async () => {
+  const user = await getAuthUser();
+
+  if (!user) return null;
+
+  const supabase = await createClient();
+
+  const { data: profile, error } = await supabase
+    .from("profiles")
+    .select("username, display_name")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (error) {
+    console.error(
+      "[Auth] Profile retrieval failed:",
+      error.message
+    );
+  }
+
+  return {
+    id: user.id,
+    username: profile?.username ?? "",
+    display_name: profile?.display_name ?? "User",
+  };
+});
+
+// C:\Users\tydam\bootcamp\nx-msg\src\lib\logout.js
+
+// src/lib/logout.js
+
+"use client";
+
+import { createClient } from "@/lib/supabase/client";
+import { cleanupPushForLogout } from "@/lib/pushClient";
+
+import { clearMessageProfileCache } from "@/lib/messageProfiles";
+import { clearAttachmentCache } from "@/lib/extras/attachments";
+import { clearLinkPreviewCache } from "@/lib/extras/linkPreviews";
+
+import usePushStore from "@/store/usePushStore";
+import useChatStore from "@/store/useChatStore";
+import useContactStore from "@/store/useContactStore";
+import usePresenceStore from "@/store/usePresenceStore";
+import useBlockStore from "@/store/useBlockStore";
+
+let logoutRequest = null;
+
+export function redirectAfterLogout() {
+    window.location.replace("/login");
+}
+
+/* -------------------- APPLICATION CLEANUP -------------------- */
+
+export function resetApplication() {
+    usePushStore.getState().reset();
+    useBlockStore.getState().reset();
+    useChatStore.getState().reset();
+    useContactStore.getState().reset();
+    usePresenceStore.getState().reset();
+
+    clearMessageProfileCache();
+    clearAttachmentCache();
+    clearLinkPreviewCache();
+}
+
+export function isLoggingOut() {
+    return logoutRequest !== null;
+}
+
+/* -------------------- SESSION SYNCHRONISATION -------------------- */
+
+export const SESSION_CHANGE_KEY =
+    "messenger:session-change";
+
+export function notifySessionChange() {
+    try {
+        window.localStorage.setItem(
+            SESSION_CHANGE_KEY,
+            crypto.randomUUID()
+        );
+    } catch {
+        // Storage may be unavailable or restricted.
+    }
+}
+
+/* -------------------- PUSH CLEANUP -------------------- */
+
+async function prepareNotifications() {
+    let cleanupError = null;
+
+    try {
+        await usePushStore.getState().prepareForLogout();
+    } catch (error) {
+        cleanupError = error;
+    }
+
+    try {
+        const error = await cleanupPushForLogout();
+        cleanupError ??= error;
+    } catch (error) {
+        cleanupError ??= error;
+    }
+
+    if (cleanupError) {
+        console.error(
+            "Push logout cleanup failed:",
+            cleanupError.message
+        );
+    }
+
+    return cleanupError;
+}
+
+/* -------------------- RECOVERY -------------------- */
+
+function restoreNotifications() {
+    const store = usePushStore.getState();
+
+    store.cancelLogout();
+
+    void store.refresh().catch((error) => {
+        console.error(
+            "Failed to restore notifications:",
+            error?.message
+        );
+    });
+}
+
+/* -------------------- LOGOUT -------------------- */
+
+async function performLogout() {
+    const supabase = createClient();
+
+    let signedOut = false;
+
+    try {
+        const pushCleanupError =
+            await prepareNotifications();
+
+        const { error } =
+            await supabase.auth.signOut();
+
+        if (error) throw error;
+
+        signedOut = true;
+
+        resetApplication();
+        notifySessionChange();
+
+        return {
+            success: true,
+            pushCleanupError,
+        };
+    } catch (error) {
+        if (!signedOut) {
+            restoreNotifications();
+        }
+
+        throw error;
+    }
+}
+
+/* -------------------- PUBLIC API -------------------- */
+
+export function logout() {
+    if (logoutRequest) {
+        return logoutRequest;
+    }
+
+    const request = Promise.resolve()
+        .then(performLogout)
+        .finally(() => {
+            if (logoutRequest === request) {
+                logoutRequest = null;
+            }
+        });
+
+    logoutRequest = request;
+
+    return request;
+}
+
+// C:\Users\tydam\bootcamp\nx-msg\src\proxy.js
+
+// src/proxy.js
+
+import { updateSession } from "./lib/supabase/proxy";
+
+export function proxy(request) {
+  return updateSession(request);
+}
+
+export const config = {
+  matcher: [
+    "/((?!_next/static|_next/image|favicon\\.ico$|sw\\.js$|manifest\\.webmanifest$|manifest\\.json$|robots\\.txt$|sitemap\\.xml$|api/push/send$|.*\\.(?:svg|png|jpg|jpeg|gif|webp|avif|ico|woff|woff2)$).*)",
+  ],
+};

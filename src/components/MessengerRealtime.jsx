@@ -6,7 +6,9 @@ import { useEffect } from "react";
 
 import { subscribeToAllMessages } from "@/lib/messages";
 import { subscribeToPresence } from "@/lib/presence";
-
+import {
+  playIncomingMessageSound,
+} from "@/lib/notificationSounds";
 import useChatStore from "@/store/useChatStore";
 import usePresenceStore from "@/store/usePresenceStore";
 
@@ -195,34 +197,54 @@ export default function MessengerRealtime({ userId }) {
 
     /* -------------------- MESSAGES -------------------- */
 
-    function handleMessage(message) {
-      if (!active || !isNewMessage(message)) {
-        return;
-      }
+ function handleMessage(message) {
+  if (!active || !isNewMessage(message)) {
+    return;
+  }
 
-      const store = getChat();
+  const store = getChat();
 
-      const isActiveChat =
-        message.conversation_id ===
-        store.activeChatId;
+  const isActiveChat =
+    message.conversation_id ===
+    store.activeChatId;
 
-      if (isActiveChat) {
-        store.receiveMessage(message);
-      }
+  const isOwnMessage =
+    message.sender_id === userId;
 
-      if (
-        isActiveChat &&
-        message.sender_id !== userId &&
-        isVisible()
-      ) {
-        pendingReadChatId =
-          message.conversation_id;
-      } else {
-        pendingRefresh = true;
-      }
+  let inserted = true;
 
-      scheduleUpdates();
-    }
+  if (isActiveChat) {
+    inserted = store.receiveMessage(message);
+  }
+
+  if (!isOwnMessage && inserted) {
+    const conversation =
+      store.conversations.find(
+        (chat) =>
+          chat.id === message.conversation_id
+      );
+
+    playIncomingMessageSound({
+      message,
+      userId,
+      isActiveChat,
+      isGroup: conversation?.type === "group",
+    });
+  }
+
+  if (
+    isActiveChat &&
+    !isOwnMessage &&
+    isVisible()
+  ) {
+    pendingReadChatId =
+      message.conversation_id;
+  } else {
+    pendingRefresh = true;
+  }
+
+  scheduleUpdates();
+}
 
     /* -------------------- CONNECTION -------------------- */
 
