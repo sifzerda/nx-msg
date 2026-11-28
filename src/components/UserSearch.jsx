@@ -9,64 +9,77 @@ import { searchUsers } from "@/lib/contacts";
 import useContactStore from "@/store/useContactStore";
 import ContactCard from "./ContactCard";
 
+const EMPTY_RESULTS = [];
+const SEARCH_DELAY = 300;
+const MIN_QUERY_LENGTH = 2;
+
 export default function UserSearch() {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState([]);
-  const [searching, setSearching] = useState(false);
-  const [searchError, setSearchError] = useState("");
+  const [search, setSearch] = useState(null);
   const [pendingId, setPendingId] = useState(null);
 
   const contacts = useContactStore((s) => s.contacts);
   const add = useContactStore((s) => s.add);
   const remove = useContactStore((s) => s.remove);
 
+  const searchQuery = query.trim();
+  const canSearch = searchQuery.length >= MIN_QUERY_LENGTH;
+  const currentSearch = canSearch && search?.query === searchQuery
+    ? search
+    : null;
+
+  const results = currentSearch?.results ?? EMPTY_RESULTS;
+  const searchError = currentSearch?.error ?? "";
+  const searching = canSearch && !currentSearch;
+
   useEffect(() => {
+    if (!canSearch) return;
+
     let cancelled = false;
 
-    if (query.trim().length < 2) {
-      setResults([]);
-      setSearching(false);
-      setSearchError("");
-      return;
-    }
-
     const timer = setTimeout(async () => {
-      setSearching(true);
-      setSearchError("");
-
       try {
-        const users = await searchUsers(query);
+        const users = await searchUsers(searchQuery);
 
         if (!cancelled) {
-          setResults(users);
+          setSearch({
+            query: searchQuery,
+            results: users,
+            error: "",
+          });
         }
       } catch (error) {
         if (!cancelled) {
-          setSearchError(error.message);
-          setResults([]);
-        }
-      } finally {
-        if (!cancelled) {
-          setSearching(false);
+          setSearch({
+            query: searchQuery,
+            results: EMPTY_RESULTS,
+            error: error.message || "Unable to search users.",
+          });
         }
       }
-    }, 300);
+    }, SEARCH_DELAY);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [query]);
+  }, [searchQuery, canSearch]);
+
+  function handleQueryChange(event) {
+    const value = event.target.value;
+
+    if (value.trim() !== searchQuery) {
+      setSearch(null);
+    }
+
+    setQuery(value);
+  }
 
   async function handleAction(id, isContact) {
     setPendingId(id);
 
     try {
-      if (isContact) {
-        await remove(id);
-      } else {
-        await add(id);
-      }
+      await (isContact ? remove(id) : add(id));
     } finally {
       setPendingId(null);
     }
@@ -77,20 +90,24 @@ export default function UserSearch() {
       <div className="relative">
         <Search
           size={20}
-          className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
+          aria-hidden="true"
+          className="absolute left-4 top-1/2 -translate-y-1/2 text-muted"
         />
 
         <input
           type="search"
+          aria-label="Search users"
           placeholder="Search users..."
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          className="w-full rounded-xl border border-gray-800 bg-gray-900 py-3 pl-12 pr-4 text-white outline-none focus:border-blue-500"
+          onChange={handleQueryChange}
+          className="w-full rounded-xl border border-border bg-input py-3 pl-12 pr-4 text-foreground placeholder:text-muted focus:border-accent"
         />
       </div>
 
       {searching && (
-        <p className="text-sm text-gray-400">Searching...</p>
+        <p role="status" className="text-sm text-muted">
+          Searching...
+        </p>
       )}
 
       {searchError && (
@@ -118,11 +135,11 @@ export default function UserSearch() {
         })}
       </div>
 
-      {!searching &&
+      {canSearch &&
+        !searching &&
         !searchError &&
-        query.trim().length >= 2 &&
         results.length === 0 && (
-          <p className="text-sm text-gray-400">
+          <p className="text-sm text-muted">
             No users found.
           </p>
         )}

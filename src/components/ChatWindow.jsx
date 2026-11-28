@@ -42,7 +42,16 @@ const EMPTY_REACTIONS = [];
 
 const SCROLL_THRESHOLD = 100;
 
-export default function ChatWindow({
+export default function ChatWindow(props) {
+  return (
+    <ChatSession
+      key={`${props.userId}:${props.conversationId}`}
+      {...props}
+    />
+  );
+}
+
+function ChatSession({
   conversationId,
   userId,
 }) {
@@ -140,12 +149,6 @@ export default function ChatWindow({
       closeChat(conversationId);
     };
   }, [conversationId, openChat, closeChat]);
-
-  // Reset conversation-specific UI state
-  useEffect(() => {
-    setExportError(null);
-    setSearchOpen(false);
-  }, [conversationId]);
 
   // Identify required group member profiles
   const senderKey = useMemo(() => {

@@ -30,7 +30,7 @@ export default function ContactList() {
   if (contacts.length === 0) {
     return (
       <p className="text-gray-400">
-        You haven't added any contacts yet.
+        You haven&apos;t added any contacts yet.
       </p>
     );
   }
