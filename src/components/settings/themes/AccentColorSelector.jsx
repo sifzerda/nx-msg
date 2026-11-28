@@ -23,7 +23,7 @@ import {
   ACCENT_OPTIONS,
   DEFAULT_ACCENT,
   getAccent,
-} from "@/theme/accentColors";
+} from "@/themes/accentColors";
 
 /* -------------------- LOADING STATE -------------------- */
 

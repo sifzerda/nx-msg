@@ -1,7 +1,7 @@
 // src/constants/appearance.js
 
-import { DEFAULT_THEME } from "@/theme/themes";
-import { DEFAULT_ACCENT } from "@/theme/accentColors";
+import { DEFAULT_THEME } from "@/themes/themes";
+import { DEFAULT_ACCENT } from "@/themes/accentColors";
 
 /* -------------------- STORAGE -------------------- */
 

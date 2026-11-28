@@ -11,7 +11,7 @@ import {
   MousePointer2,
 } from "lucide-react";
 
-import { getAccent } from "@/theme/accentColors";
+import { getAccent } from "@/themes/accentColors";
 
 /* -------------------- PREVIEW NAVIGATION -------------------- */
 

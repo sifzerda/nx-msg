@@ -5,7 +5,7 @@
 import { memo } from "react";
 import { CheckCircle2 } from "lucide-react";
 import ThemePreview from "./ThemePreview";
-import { THEME_MODE } from "@/theme/themes";
+import { THEME_MODE } from "@/themes/themes";
 
 /* -------------------- THEME CARD -------------------- */
 

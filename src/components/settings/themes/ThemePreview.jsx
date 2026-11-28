@@ -12,9 +12,9 @@ import {
 import {
   getTheme,
   THEME_MODE,
-} from "@/theme/themes";
+} from "@/themes/themes";
 
-import { getAccent } from "@/theme/accentColors";
+import { getAccent } from "@/themes/accentColors";
 
 /* -------------------- SYSTEM PREVIEW -------------------- */
 

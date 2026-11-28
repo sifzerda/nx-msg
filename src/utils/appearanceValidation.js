@@ -1,7 +1,7 @@
 // src/utils/appearanceValidation.js
 
-import { isValidTheme } from "@/theme/themes";
-import { isValidAccent } from "@/theme/accentColors";
+import { isValidTheme } from "@/themes/themes";
+import { isValidAccent } from "@/themes/accentColors";
 
 import {
   BUBBLE_SHAPES,

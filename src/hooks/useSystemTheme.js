@@ -7,7 +7,7 @@ import { useSyncExternalStore } from "react";
 import {
   SYSTEM_THEME_QUERY,
   getSystemPrefersDark,
-} from "@/theme/applyAppearance";
+} from "@/themes/applyAppearance";
 
 /* -------------------- SUBSCRIPTION -------------------- */
 

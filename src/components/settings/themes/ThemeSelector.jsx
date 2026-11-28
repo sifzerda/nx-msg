@@ -24,7 +24,7 @@ import {
   DEFAULT_THEME,
   resolveTheme,
   getTheme,
-} from "@/theme/themes";
+} from "@/themes/themes";
 
 /* -------------------- LOADING STATE -------------------- */
 

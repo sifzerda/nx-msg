@@ -9,8 +9,8 @@ import {
   createJSONStorage,
 } from "zustand/middleware";
 
-import { isValidTheme } from "@/theme/themes";
-import { isValidAccent } from "@/theme/accentColors";
+import { isValidTheme } from "@/themes/themes";
+import { isValidAccent } from "@/themes/accentColors";
 
 import {
   APPEARANCE_STORAGE_KEY,
