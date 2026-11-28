@@ -9,6 +9,7 @@ import {
     expect,
     beforeEach,
 } from "@jest/globals";
+import { highlightMentionParts } from "@/utils/messageUtils";
 
 /* -------------------- MOCKS -------------------- */
 
@@ -55,7 +56,6 @@ const {
     startChat,
     createGroupChat,
     getConversations,
-    getGroupSummaries,
     getMessages,
     getMessagesByIds,
     sendMessage,
@@ -1586,71 +1586,6 @@ describe("Messaging API - read receipts", () => {
     });
 });
 
-/* -------------------- GROUP SUMMARIES -------------------- */
-
-describe("Messaging API - group summaries", () => {
-    test("retrieves group summaries", async () => {
-        const groups = [
-            {
-                id: "group-1",
-                type: "group",
-                group_name: "My Group",
-                member_count: 3,
-            },
-        ];
-
-        mockRpc.mockResolvedValue({
-            data: groups,
-            error: null,
-        });
-
-        expect(
-            await getGroupSummaries()
-        ).toEqual(groups);
-
-        expect(mockRpc).toHaveBeenCalledWith(
-            "get_group_summaries"
-        );
-    });
-
-    test("handles empty group summaries", async () => {
-        mockRpc.mockResolvedValue({
-            data: [],
-            error: null,
-        });
-
-        expect(
-            await getGroupSummaries()
-        ).toEqual([]);
-    });
-
-    test("handles null group summaries", async () => {
-        mockRpc.mockResolvedValue({
-            data: null,
-            error: null,
-        });
-
-        expect(
-            await getGroupSummaries()
-        ).toEqual([]);
-    });
-
-    test("propagates group summary errors", async () => {
-        mockRpc.mockResolvedValue({
-            data: null,
-            error: new Error(
-                "Unable to retrieve groups"
-            ),
-        });
-
-        await expect(
-            getGroupSummaries()
-        ).rejects.toThrow(
-            "Unable to retrieve groups"
-        );
-    });
-});
-
 /* -------------------- REALTIME SUBSCRIPTIONS -------------------- */
 
 describe("Messaging API - global message subscription", () => {
@@ -1820,4 +1755,142 @@ describe("Messaging API - read receipt subscription", () => {
             mockRealtimeChannel
         );
     });
+});
+
+/* --------------------- GROUP MENTIONS -------------------- */ 
+
+describe("highlightMentionParts", () => {
+  const mentions = [
+    {
+      user_id: "user-1",
+      username: "sarah",
+    },
+  ];
+
+  test("highlights verified mentions", () => {
+    const parts = [
+      {
+        type: "text",
+        value: "Hello @sarah!",
+      },
+    ];
+
+    expect(
+      highlightMentionParts(parts, mentions)
+    ).toEqual([
+      {
+        type: "text",
+        value: "Hello ",
+      },
+      {
+        type: "mention",
+        value: "@sarah",
+        userId: "user-1",
+        username: "sarah",
+      },
+      {
+        type: "text",
+        value: "!",
+      },
+    ]);
+  });
+
+  test("does not highlight unknown users", () => {
+    const parts = [
+      {
+        type: "text",
+        value: "Hello @unknown",
+      },
+    ];
+
+    expect(
+      highlightMentionParts(parts, mentions)
+    ).toBe(parts);
+  });
+
+  test("preserves email addresses", () => {
+    const parts = [
+      {
+        type: "text",
+        value: "example@sarah.com",
+      },
+    ];
+
+    expect(
+      highlightMentionParts(parts, mentions)
+    ).toBe(parts);
+  });
+
+  test("preserves links", () => {
+    const parts = [
+      {
+        type: "link",
+        value: "https://example.com/@sarah",
+        url: "https://example.com/@sarah",
+      },
+    ];
+
+    expect(
+      highlightMentionParts(parts, mentions)
+    ).toBe(parts);
+  });
+
+  test("does not match partial usernames", () => {
+    const parts = [
+      {
+        type: "text",
+        value: "@sarah123",
+      },
+    ];
+
+    expect(
+      highlightMentionParts(parts, mentions)
+    ).toBe(parts);
+  });
+
+  test("highlights repeated mentions", () => {
+    const parts = [
+      {
+        type: "text",
+        value: "@sarah and @sarah",
+      },
+    ];
+
+    const result = highlightMentionParts(
+      parts,
+      mentions
+    );
+
+    expect(
+      result.filter(
+        (part) => part.type === "mention"
+      )
+    ).toHaveLength(2);
+  });
+
+  test("handles missing metadata", () => {
+    const parts = [
+      {
+        type: "text",
+        value: "@sarah",
+      },
+    ];
+
+    expect(
+      highlightMentionParts(parts, null)
+    ).toBe(parts);
+  });
+
+  test("preserves ordinary messages", () => {
+    const parts = [
+      {
+        type: "text",
+        value: "Hello everyone",
+      },
+    ];
+
+    expect(
+      highlightMentionParts(parts, mentions)
+    ).toBe(parts);
+  });
 });

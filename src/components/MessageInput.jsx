@@ -22,14 +22,14 @@ import {
 
 import useChatStore from "@/store/useChatStore";
 
-import { insertEmoji } from "@/utils/emojiUtils";
+import { insertEmoji } from "@/utils/messageUtils";
 import { isImageFile, normalizeFile } from "@/utils/fileUtils";
 import { FILE_ACCEPT } from "@/constants/attachments";
 
 import {
   MAX_MESSAGE_LENGTH,
   COMPOSER_PICKER,
-} from "@/constants/emojis";
+} from "@/constants/messages";
 
 import { ReplyPreview } from "./MessageReply";
 import AttachmentPreview from "./extras/AttachmentPreview";

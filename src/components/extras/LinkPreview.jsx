@@ -9,9 +9,11 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
-
+import {
+  useNearViewport,
+  usePageVisible,
+} from "@/hooks/useBrowser";
 import {
   Globe,
   ExternalLink,
@@ -32,127 +34,6 @@ import {
 } from "@/utils/urlUtils";
 
 import { isPreviewAllowed } from "@/utils/previewUrlPolicy";
-
-/* -------------------- VISIBILITY OBSERVER -------------------- */
-
-const visibilityCallbacks = new Map();
-
-let visibilityObserver = null;
-
-const pageVisibilityListeners = new Set();
-
-function notifyPageVisibility() {
-  for (const listener of pageVisibilityListeners) {
-    listener();
-  }
-}
-
-function subscribePageVisibility(listener) {
-  pageVisibilityListeners.add(listener);
-
-  if (pageVisibilityListeners.size === 1) {
-    document.addEventListener(
-      "visibilitychange",
-      notifyPageVisibility
-    );
-  }
-
-  return () => {
-    pageVisibilityListeners.delete(listener);
-
-    if (!pageVisibilityListeners.size) {
-      document.removeEventListener(
-        "visibilitychange",
-        notifyPageVisibility
-      );
-    }
-  };
-}
-
-function getPageVisibility() {
-  return document.visibilityState === "visible";
-}
-
-function getServerVisibility() {
-  return false;
-}
-
-function usePageVisible() {
-  return useSyncExternalStore(
-    subscribePageVisibility,
-    getPageVisibility,
-    getServerVisibility
-  );
-}
-
-function observeVisibility(element, callback) {
-  if (typeof IntersectionObserver === "undefined") {
-    callback();
-    return () => { };
-  }
-
-  if (!visibilityObserver) {
-    visibilityObserver = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-
-          const notify = visibilityCallbacks.get(
-            entry.target
-          );
-
-          visibilityCallbacks.delete(entry.target);
-
-          visibilityObserver?.unobserve(entry.target);
-
-          notify?.();
-        }
-
-        if (!visibilityCallbacks.size) {
-          visibilityObserver?.disconnect();
-          visibilityObserver = null;
-        }
-      },
-      {
-        rootMargin: "75px",
-        threshold: 0,
-      }
-    );
-  }
-
-  visibilityCallbacks.set(element, callback);
-  visibilityObserver.observe(element);
-
-  return () => {
-    visibilityCallbacks.delete(element);
-    visibilityObserver?.unobserve(element);
-
-    if (!visibilityCallbacks.size) {
-      visibilityObserver?.disconnect();
-      visibilityObserver = null;
-    }
-  };
-}
-
-function useNearViewport() {
-  const containerRef = useRef(null);
-  const [visible, setVisible] = useState(false);
-
-  useEffect(() => {
-    const element = containerRef.current;
-
-    if (visible || !element) return;
-
-    return observeVisibility(element, () => {
-      setVisible(true);
-    });
-  }, [visible]);
-
-  return {
-    containerRef,
-    visible,
-  };
-}
 
 /* -------------------- METADATA HOOK -------------------- */
 

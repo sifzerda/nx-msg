@@ -7,22 +7,16 @@ import {
   requireUser,
 } from "@/lib/supabase/server";
 
+import { isUuid } from "@/utils/validation";
+
 import ChatWindow from "@/components/ChatWindow";
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export default async function ConversationPage({
-  params,
-}) {
+export default async function ConversationPage({ params }) {
   const { id } = await params;
 
   const user = await requireUser();
 
-  if (
-    typeof id !== "string" ||
-    !UUID_PATTERN.test(id)
-  ) {
+  if (!isUuid(id)) {
     notFound();
   }
 

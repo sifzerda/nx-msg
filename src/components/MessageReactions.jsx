@@ -14,7 +14,7 @@ import { SmilePlus } from "lucide-react";
 import {
   QUICK_REACTIONS,
   REACTION_LABELS,
-} from "@/constants/reactions";
+} from "@/constants/messages";
 
 const EMPTY_GROUPS = Object.freeze([]);
 

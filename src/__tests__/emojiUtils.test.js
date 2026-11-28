@@ -5,7 +5,7 @@ import {
   test,
   expect,
 } from "@jest/globals";
-import { insertEmoji } from "@/utils/emojiUtils";
+import { insertEmoji } from "@/utils/messageUtils";
 
 describe("insertEmoji", () => {
   test("inserts an emoji into an empty message", () => {

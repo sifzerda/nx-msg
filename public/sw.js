@@ -14,6 +14,7 @@ const MAX_BODY_LENGTH = 250;
 function getSafePath(value) {
   return (
     typeof value === "string" &&
+    value.length === DEFAULT_PATH.length + 37 &&
     CHAT_PATH_PATTERN.test(value)
   )
     ? value
@@ -23,6 +24,7 @@ function getSafePath(value) {
 function getMessageId(value) {
   return (
     typeof value === "string" &&
+    value.length === 36 &&
     UUID_PATTERN.test(value)
   )
     ? value.toLowerCase()

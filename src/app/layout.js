@@ -1,7 +1,6 @@
 // src/app/layout.js
 
 import { Geist, Geist_Mono } from "next/font/google";
-
 import { getCurrentUser } from "@/lib/supabase/server";
 
 import Header from "@/components/Header";

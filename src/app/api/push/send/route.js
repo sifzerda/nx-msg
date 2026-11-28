@@ -9,7 +9,7 @@ import {
   sendWebPush,
   isValidPushEndpoint,
 } from "@/lib/webPush";
-
+import { isUuid } from "@/utils/validation";
 import {
   getNotificationPreview,
 } from "@/utils/messageUtils";
@@ -83,13 +83,6 @@ function isValidEvent(payload) {
     payload?.type === "INSERT" &&
     payload?.table === "messages" &&
     payload?.schema === "public"
-  );
-}
-
-function isValidMessageId(messageId) {
-  return (
-    typeof messageId === "string" &&
-    UUID_PATTERN.test(messageId)
   );
 }
 
@@ -270,7 +263,7 @@ export async function POST(request) {
 
     const messageId = payload.record?.id;
 
-    if (!isValidMessageId(messageId)) {
+    if (!isUuid(messageId)) {
       return json(
         { error: "Invalid message ID" },
         400

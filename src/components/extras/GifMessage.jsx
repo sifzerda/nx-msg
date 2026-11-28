@@ -7,7 +7,6 @@ import {
   useEffect,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 
 import {
@@ -21,83 +20,13 @@ import {
 
 import { getGifById } from "@/lib/extras/gifs";
 
-const MOTION_QUERY = "(prefers-reduced-motion: reduce)";
+import {
+  useViewport,
+  usePageVisible,
+  useReducedMotion,
+} from "@/hooks/useBrowser";
 
-/* -------------------- BROWSER PREFERENCES -------------------- */
-
-function subscribeMotion(callback) {
-  const media = window.matchMedia(MOTION_QUERY);
-
-  media.addEventListener("change", callback);
-
-  return () => {
-    media.removeEventListener("change", callback);
-  };
-}
-
-function getReducedMotion() {
-  return window.matchMedia(MOTION_QUERY).matches;
-}
-
-function subscribeVisibility(callback) {
-  document.addEventListener("visibilitychange", callback);
-
-  return () => {
-    document.removeEventListener("visibilitychange", callback);
-  };
-}
-
-function getPageVisible() {
-  return document.visibilityState === "visible";
-}
-
-function getServerSnapshot() {
-  return false;
-}
-
-/* -------------------- SHARED OBSERVERS -------------------- */
-
-const observers = new Map();
-
-function observeElement(element, rootMargin, callback) {
-  if (typeof IntersectionObserver === "undefined") {
-    callback(true);
-    return () => {};
-  }
-
-  let entry = observers.get(rootMargin);
-
-  if (!entry) {
-    const callbacks = new Map();
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const item of entries) {
-          callbacks.get(item.target)?.(item.isIntersecting);
-        }
-      },
-      { rootMargin }
-    );
-
-    entry = { observer, callbacks };
-    observers.set(rootMargin, entry);
-  }
-
-  entry.callbacks.set(element, callback);
-  entry.observer.observe(element);
-
-  return () => {
-    entry.observer.unobserve(element);
-    entry.callbacks.delete(element);
-
-    if (!entry.callbacks.size) {
-      entry.observer.disconnect();
-      observers.delete(rootMargin);
-    }
-  };
-}
-
-/* -------------------- GIF PLACEHOLDERS -------------------- */
+/* -------------------- PLACEHOLDERS -------------------- */
 
 function GifPlaceholder({ loading }) {
   return (
@@ -105,7 +34,7 @@ function GifPlaceholder({ loading }) {
       {loading ? (
         <LoaderCircle
           size={24}
-          className="animate-spin opacity-60"
+          className="animate-spin opacity-60 motion-reduce:animate-none"
         />
       ) : (
         <Film size={28} className="opacity-40" />
@@ -133,7 +62,7 @@ function GifError({ onRetry }) {
   );
 }
 
-/* -------------------- GIF ATTRIBUTION -------------------- */
+/* -------------------- ATTRIBUTION -------------------- */
 
 const GifAttribution = memo(function GifAttribution() {
   return (
@@ -156,31 +85,30 @@ const GifAttribution = memo(function GifAttribution() {
 /* -------------------- GIF CONTENT -------------------- */
 
 function GifContent({ gif, onError }) {
-  const containerRef = useRef(null);
   const videoRef = useRef(null);
 
-  const [visible, setVisible] = useState(false);
-  const [playPreference, setPlayPreference] = useState(null);
-  const [videoFailed, setVideoFailed] = useState(false);
+  const {
+    containerRef,
+    visible,
+  } = useViewport();
 
-  const reducedMotion = useSyncExternalStore(
-    subscribeMotion,
-    getReducedMotion,
-    getServerSnapshot
-  );
+  const reducedMotion = useReducedMotion();
+  const pageVisible = usePageVisible();
 
-  const pageVisible = useSyncExternalStore(
-    subscribeVisibility,
-    getPageVisible,
-    getServerSnapshot
-  );
+  const [playPreference, setPlayPreference] =
+    useState(null);
 
-  const playing = playPreference ?? !reducedMotion;
+  const [videoFailed, setVideoFailed] =
+    useState(false);
+
+  const playing =
+    playPreference ?? !reducedMotion;
 
   const shouldPlay =
     playing && visible && pageVisible;
 
-  const useVideo = Boolean(gif.mp4Url && !videoFailed);
+  const useVideo =
+    Boolean(gif.mp4Url && !videoFailed);
 
   const imageSource = shouldPlay
     ? gif.url || gif.stillUrl
@@ -188,14 +116,6 @@ function GifContent({ gif, onError }) {
 
   const canTogglePlayback =
     useVideo || Boolean(gif.url);
-
-  useEffect(() => {
-    const element = containerRef.current;
-
-    if (!element) return;
-
-    return observeElement(element, "0px", setVisible);
-  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -218,7 +138,11 @@ function GifContent({ gif, onError }) {
       active = false;
       video.pause();
     };
-  }, [shouldPlay, useVideo, gif.mp4Url]);
+  }, [
+    shouldPlay,
+    useVideo,
+    gif.mp4Url,
+  ]);
 
   function togglePlayback() {
     setPlayPreference(!playing);
@@ -226,7 +150,10 @@ function GifContent({ gif, onError }) {
 
   return (
     <>
-      <div ref={containerRef} className="group/gif relative">
+      <div
+        ref={containerRef}
+        className="group/gif relative"
+      >
         {useVideo ? (
           <video
             ref={videoRef}
@@ -247,7 +174,9 @@ function GifContent({ gif, onError }) {
             loading="lazy"
             decoding="async"
             draggable={false}
-            onError={() => onError("Unable to display GIF")}
+            onError={() =>
+              onError("Unable to display GIF")
+            }
             className="block max-h-72 w-full object-contain"
           />
         ) : (
@@ -258,7 +187,9 @@ function GifContent({ gif, onError }) {
           <button
             type="button"
             onClick={togglePlayback}
-            aria-label={playing ? "Pause GIF" : "Play GIF"}
+            aria-label={
+              playing ? "Pause GIF" : "Play GIF"
+            }
             className="absolute bottom-2 right-2 rounded-full bg-black/60 p-2 text-white transition-opacity hover:bg-black/80 sm:opacity-0 sm:group-hover/gif:opacity-100 sm:focus-visible:opacity-100"
           >
             {playing ? (
@@ -275,32 +206,29 @@ function GifContent({ gif, onError }) {
   );
 }
 
-/* -------------------- GIF MESSAGE -------------------- */
+/* -------------------- GIF SESSION -------------------- */
 
 function GifSession({ gifId }) {
-  const containerRef = useRef(null);
+  const {
+    containerRef,
+    visible: nearViewport,
+  } = useViewport({
+    rootMargin: "150px",
+  });
 
-  const [nearViewport, setNearViewport] = useState(false);
+  const pageVisible = usePageVisible();
+
   const [result, setResult] = useState(null);
   const [attempt, setAttempt] = useState(0);
 
   const gif = result?.gif ?? null;
   const error = result?.error ?? null;
 
-  useEffect(() => {
-    const element = containerRef.current;
-
-    if (!element) return;
-
-    return observeElement(
-      element,
-      "150px",
-      setNearViewport
-    );
-  }, []);
-
   const shouldLoad =
-    nearViewport && !gif && !error;
+    nearViewport &&
+    pageVisible &&
+    !gif &&
+    !error;
 
   useEffect(() => {
     if (!shouldLoad) return;
@@ -329,7 +257,9 @@ function GifSession({ gifId }) {
 
         setResult({
           gif: null,
-          error: error?.message || "Unable to load GIF",
+          error:
+            error?.message ||
+            "Unable to load GIF",
         });
       }
     }
@@ -337,7 +267,11 @@ function GifSession({ gifId }) {
     void loadGif();
 
     return () => controller.abort();
-  }, [gifId, shouldLoad, attempt]);
+  }, [
+    gifId,
+    shouldLoad,
+    attempt,
+  ]);
 
   function retry() {
     setResult(null);
@@ -364,16 +298,23 @@ function GifSession({ gifId }) {
           onError={handleDisplayError}
         />
       ) : (
-        <GifPlaceholder loading={nearViewport} />
+        <GifPlaceholder loading={shouldLoad} />
       )}
     </div>
   );
 }
 
+/* -------------------- PUBLIC COMPONENT -------------------- */
+
 function GifMessage({ gifId }) {
   if (!gifId) return null;
 
-  return <GifSession key={gifId} gifId={gifId} />;
+  return (
+    <GifSession
+      key={gifId}
+      gifId={gifId}
+    />
+  );
 }
 
 export default memo(GifMessage);

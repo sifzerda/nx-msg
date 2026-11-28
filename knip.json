@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/knip/schema.json",
+  "paths": {
+    "@/*": ["./src/*"]
+  },
+  "entry": [
+    "src/app/**/{page,layout,route,loading,error,not-found,template,default}.{js,jsx,ts,tsx}!",
+    "src/proxy.{js,ts}!",
+    "public/sw.js!"
+  ],
+  "project": [
+    "src/**/*.{js,jsx,ts,tsx,css}!",
+    "public/**/*.js!",
+    "!src/__tests__/**!",
+    "!src/**/*.{test,spec}.{js,jsx,ts,tsx}!"
+  ]
+}
