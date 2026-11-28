@@ -1,33 +1,21 @@
-// src/themeS/ThemeProvider.jsx
+// src/themes/ThemeProvider.jsx
 
 "use client";
 
 import { useEffect } from "react";
 
-import useAppearanceStore from
-  "@/store/useAppearanceStore";
+import useAppearanceStore from "@/store/useAppearanceStore";
 
 import {
+  APPEARANCE_CONFIG,
+  DEFAULT_APPEARANCE,
+  SYSTEM_THEME_QUERY,
+  sanitizeAppearance,
   applyAppearance,
   getSystemPrefersDark,
-  SYSTEM_THEME_QUERY,
-} from "./applyAppearance";
+} from "./appearance";
 
-import { THEME_MODE } from "./themes";
-
-/* -------------------- PREFERENCE COMPARISON -------------------- */
-
-function hasAppearanceChanged(current, previous) {
-  return (
-    current.theme !== previous.theme ||
-    current.accent !== previous.accent ||
-    current.messageFontSize !==
-      previous.messageFontSize ||
-    current.bubbleShape !== previous.bubbleShape
-  );
-}
-
-/* -------------------- HYDRATION -------------------- */
+const preferenceKeys = Object.keys(DEFAULT_APPEARANCE);
 
 let hydrationRequest = null;
 
@@ -36,140 +24,75 @@ function hydrateAppearance() {
     return Promise.resolve();
   }
 
-  if (hydrationRequest) {
-    return hydrationRequest;
+  if (!hydrationRequest) {
+    hydrationRequest = Promise.resolve()
+      .then(() => useAppearanceStore.persist.rehydrate())
+      .catch((error) => {
+        console.warn("Appearance restoration failed:", error);
+      })
+      .finally(() => {
+        hydrationRequest = null;
+        useAppearanceStore.getState().setHasHydrated(true);
+      });
   }
 
-  const request = Promise.resolve()
-    .then(() => {
-      return useAppearanceStore.persist?.rehydrate();
-    })
-    .catch((error) => {
-      console.warn(
-        "Appearance hydration failed:",
-        error
-      );
-    })
-    .finally(() => {
-      useAppearanceStore
-        .getState()
-        .setHasHydrated(true);
-
-      if (hydrationRequest === request) {
-        hydrationRequest = null;
-      }
-    });
-
-  hydrationRequest = request;
-
-  return request;
+  return hydrationRequest;
 }
-
-/* -------------------- PROVIDER -------------------- */
 
 export default function ThemeProvider({ children }) {
   useEffect(() => {
     let active = true;
 
-    /* -------------------- APPLY CURRENT STATE -------------------- */
-
     function applyCurrentAppearance() {
-      if (!active) return;
-
       const state = useAppearanceStore.getState();
 
-      if (!state.hasHydrated) return;
+      if (!active || !state.hasHydrated) return;
 
-      applyAppearance(state, {
-        prefersDark: getSystemPrefersDark(),
-      });
+      applyAppearance(
+        sanitizeAppearance(state),
+        document.documentElement,
+        getSystemPrefersDark(),
+        APPEARANCE_CONFIG
+      );
     }
 
-    /* -------------------- STORE SUBSCRIPTION -------------------- */
-
     const unsubscribe = useAppearanceStore.subscribe(
-      (current, previous) => {
-        if (!active || !current.hasHydrated) {
-          return;
-        }
-
+      (state, previous) => {
         if (
-          !previous.hasHydrated ||
-          hasAppearanceChanged(current, previous)
+          state.hasHydrated &&
+          (
+            !previous.hasHydrated ||
+            preferenceKeys.some(
+              (key) => state[key] !== previous[key]
+            )
+          )
         ) {
           applyCurrentAppearance();
         }
       }
     );
 
-    /* -------------------- SYSTEM THEME CHANGES -------------------- */
+    const mediaQuery = window.matchMedia?.(SYSTEM_THEME_QUERY);
 
-    const mediaQuery =
-      typeof window.matchMedia === "function"
-        ? window.matchMedia(SYSTEM_THEME_QUERY)
-        : null;
-
-    function handleSystemThemeChange() {
-      if (!active) return;
-
-      const state = useAppearanceStore.getState();
-
-      if (state.theme !== THEME_MODE.SYSTEM) {
-        return;
-      }
-
-      applyCurrentAppearance();
-    }
-
-    if (mediaQuery) {
-      if (
-        typeof mediaQuery.addEventListener === "function"
-      ) {
-        mediaQuery.addEventListener(
-          "change",
-          handleSystemThemeChange
-        );
-      } else {
-        mediaQuery.addListener?.(
-          handleSystemThemeChange
-        );
+    function handleSystemChange() {
+      if (useAppearanceStore.getState().theme === "system") {
+        applyCurrentAppearance();
       }
     }
 
-    /* -------------------- INITIALIZATION -------------------- */
+    mediaQuery?.addEventListener("change", handleSystemChange);
 
     if (useAppearanceStore.getState().hasHydrated) {
       applyCurrentAppearance();
     } else {
-      void hydrateAppearance().then(() => {
-        if (active) {
-          applyCurrentAppearance();
-        }
-      });
+      void hydrateAppearance();
     }
-
-    /* -------------------- CLEANUP -------------------- */
 
     return () => {
       active = false;
-
       unsubscribe();
 
-      if (mediaQuery) {
-        if (
-          typeof mediaQuery.removeEventListener ===
-          "function"
-        ) {
-          mediaQuery.removeEventListener(
-            "change",
-            handleSystemThemeChange
-          );
-        } else {
-          mediaQuery.removeListener?.(
-            handleSystemThemeChange
-          );
-        }
-      }
+      mediaQuery?.removeEventListener("change", handleSystemChange);
     };
   }, []);
 

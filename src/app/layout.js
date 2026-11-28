@@ -2,15 +2,15 @@
 
 import { Geist, Geist_Mono } from "next/font/google";
 import { createClient } from "@/lib/supabase/server";
+
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import PushNotificationInitializer from "@/components/PushNotificationInitializer";
-import ThemeProvider from "@/theme/ThemeProvider";
-import AppearanceScript from "@/theme/AppearanceScript";
+
+import ThemeProvider from "@/themes/ThemeProvider";
+import { APPEARANCE_SCRIPT } from "@/themes/appearanceScript";
 
 import "./globals.css";
-
-/* -------------------- FONTS -------------------- */
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -22,14 +22,10 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-/* -------------------- METADATA -------------------- */
-
 export const metadata = {
   title: "Messenger",
   description: "Real-time messaging application",
 };
-
-/* -------------------- ROOT LAYOUT -------------------- */
 
 export default async function RootLayout({ children }) {
   const supabase = await createClient();
@@ -65,35 +61,28 @@ export default async function RootLayout({ children }) {
       className={`${geistSans.variable} ${geistMono.variable}`}
     >
       <head>
-        <AppearanceScript />
+        <script
+          id="messenger-appearance"
+          dangerouslySetInnerHTML={{
+            __html: APPEARANCE_SCRIPT,
+          }}
+        />
       </head>
 
       <body className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
-
         <ThemeProvider>
-
-          {/* Background notification management */}
-
           <PushNotificationInitializer
             userId={currentUser?.id ?? null}
           />
 
-          {/* Application header */}
-
           <Header user={currentUser} />
-
-          {/* Page content */}
 
           <main className="min-h-0 flex-1 overflow-hidden">
             {children}
           </main>
 
-          {/* Application footer */}
-
           <Footer user={currentUser} />
-
         </ThemeProvider>
-
       </body>
     </html>
   );

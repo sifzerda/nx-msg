@@ -3,234 +3,130 @@
 "use client";
 
 import { create } from "zustand";
-
-import {
-  persist,
-  createJSONStorage,
-} from "zustand/middleware";
-
-import { isValidTheme } from "@/themes/themes";
-import { isValidAccent } from "@/themes/accentColors";
+import { persist, createJSONStorage } from "zustand/middleware";
 
 import {
   APPEARANCE_STORAGE_KEY,
   APPEARANCE_STORAGE_VERSION,
   DEFAULT_APPEARANCE,
   MESSAGE_FONT_SIZE,
-} from "@/constants/appearance";
-
-import {
-  isValidBubbleShape,
-  normalizeMessageFontSize,
   sanitizeAppearance,
-} from "@/utils/appearanceValidation";
+} from "@/themes/appearance";
 
-/* -------------------- STORE -------------------- */
+const storage = createJSONStorage(() => ({
+  getItem(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  },
+
+  setItem(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      // Preferences remain available in memory.
+    }
+  },
+
+  removeItem(key) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Storage may be unavailable.
+    }
+  },
+}));
+
+const preferenceKeys = Object.keys(DEFAULT_APPEARANCE);
 
 const useAppearanceStore = create(
   persist(
-    (set, get) => ({
-      /* -------------------- STATE -------------------- */
-
-      ...DEFAULT_APPEARANCE,
-
-      hasHydrated: false,
-
-      /* -------------------- HYDRATION -------------------- */
-
-      setHasHydrated: (hasHydrated) => {
-        const value = Boolean(hasHydrated);
-
-        if (get().hasHydrated === value) return;
-
-        set({ hasHydrated: value });
-      },
-
-      /* -------------------- THEME -------------------- */
-
-      setTheme: (theme) => {
-        if (!isValidTheme(theme)) return;
-
-        if (get().theme === theme) return;
-
-        set({ theme });
-      },
-
-      /* -------------------- ACCENT -------------------- */
-
-      setAccent: (accent) => {
-        if (!isValidAccent(accent)) return;
-
-        if (get().accent === accent) return;
-
-        set({ accent });
-      },
-
-      /* -------------------- FONT SIZE -------------------- */
-
-      setMessageFontSize: (value) => {
-        if (
-          typeof value !== "number" ||
-          !Number.isFinite(value)
-        ) {
-          return;
-        }
-
-        const messageFontSize =
-          normalizeMessageFontSize(value);
-
-        if (
-          get().messageFontSize === messageFontSize
-        ) {
-          return;
-        }
-
-        set({ messageFontSize });
-      },
-
-      increaseMessageFontSize: () => {
-        const {
-          messageFontSize,
-          setMessageFontSize,
-        } = get();
-
-        setMessageFontSize(
-          messageFontSize + MESSAGE_FONT_SIZE.STEP
-        );
-      },
-
-      decreaseMessageFontSize: () => {
-        const {
-          messageFontSize,
-          setMessageFontSize,
-        } = get();
-
-        setMessageFontSize(
-          messageFontSize - MESSAGE_FONT_SIZE.STEP
-        );
-      },
-
-      /* -------------------- BUBBLE SHAPE -------------------- */
-
-      setBubbleShape: (bubbleShape) => {
-        if (!isValidBubbleShape(bubbleShape)) return;
-
-        if (get().bubbleShape === bubbleShape) return;
-
-        set({ bubbleShape });
-      },
-
-      /* -------------------- BULK UPDATE -------------------- */
-
-      updateAppearance: (preferences) => {
-        if (
-          !preferences ||
-          typeof preferences !== "object" ||
-          Array.isArray(preferences)
-        ) {
-          return;
-        }
+    (set, get) => {
+      function updateAppearance(preferences) {
+        if (!preferences || typeof preferences !== "object") return;
 
         const current = get();
 
         const next = sanitizeAppearance({
-          theme: current.theme,
-          accent: current.accent,
-          messageFontSize: current.messageFontSize,
-          bubbleShape: current.bubbleShape,
+          ...current,
           ...preferences,
         });
 
-        const unchanged =
-          current.theme === next.theme &&
-          current.accent === next.accent &&
-          current.messageFontSize ===
-            next.messageFontSize &&
-          current.bubbleShape === next.bubbleShape;
+        if (preferenceKeys.some((key) => current[key] !== next[key])) {
+          set(next);
+        }
+      }
 
-        if (unchanged) return;
+      return {
+        ...DEFAULT_APPEARANCE,
 
-        set(next);
-      },
+        hasHydrated: false,
 
-      /* -------------------- INDIVIDUAL RESETS -------------------- */
+        setHasHydrated: (value) => {
+          if (get().hasHydrated !== Boolean(value)) {
+            set({ hasHydrated: Boolean(value) });
+          }
+        },
 
-      resetTheme: () => {
-        get().setTheme(DEFAULT_APPEARANCE.theme);
-      },
+        updateAppearance,
 
-      resetAccent: () => {
-        get().setAccent(DEFAULT_APPEARANCE.accent);
-      },
+        setTheme: (theme) => updateAppearance({ theme }),
 
-      resetMessageFontSize: () => {
-        get().setMessageFontSize(
-          DEFAULT_APPEARANCE.messageFontSize
-        );
-      },
+        setAccent: (accent) => updateAppearance({ accent }),
 
-      resetBubbleShape: () => {
-        get().setBubbleShape(
-          DEFAULT_APPEARANCE.bubbleShape
-        );
-      },
+        setBubbleShape: (bubbleShape) =>
+          updateAppearance({ bubbleShape }),
 
-      /* -------------------- FULL RESET -------------------- */
+        setMessageFontSize: (messageFontSize) =>
+          updateAppearance({ messageFontSize }),
 
-      reset: () => {
-        get().updateAppearance(DEFAULT_APPEARANCE);
-      },
-    }),
+        increaseMessageFontSize: () =>
+          updateAppearance({
+            messageFontSize:
+              get().messageFontSize + MESSAGE_FONT_SIZE.STEP,
+          }),
 
-    /* -------------------- PERSISTENCE -------------------- */
+        decreaseMessageFontSize: () =>
+          updateAppearance({
+            messageFontSize:
+              get().messageFontSize - MESSAGE_FONT_SIZE.STEP,
+          }),
 
+        resetTheme: () =>
+          updateAppearance({ theme: DEFAULT_APPEARANCE.theme }),
+
+        resetAccent: () =>
+          updateAppearance({ accent: DEFAULT_APPEARANCE.accent }),
+
+        resetBubbleShape: () =>
+          updateAppearance({
+            bubbleShape: DEFAULT_APPEARANCE.bubbleShape,
+          }),
+
+        resetMessageFontSize: () =>
+          updateAppearance({
+            messageFontSize: DEFAULT_APPEARANCE.messageFontSize,
+          }),
+
+        reset: () => updateAppearance(DEFAULT_APPEARANCE),
+      };
+    },
     {
       name: APPEARANCE_STORAGE_KEY,
-
       version: APPEARANCE_STORAGE_VERSION,
-
-      storage: createJSONStorage(
-        () => localStorage
-      ),
-
-      // Hydrate explicitly from the ThemeProvider.
-      // This avoids server/client preference mismatches.
+      storage,
       skipHydration: true,
 
-      /* -------------------- SAVED FIELDS -------------------- */
+      partialize: (state) => sanitizeAppearance(state),
 
-      partialize: (state) => ({
-        theme: state.theme,
-        accent: state.accent,
-        messageFontSize: state.messageFontSize,
-        bubbleShape: state.bubbleShape,
+      migrate: (state) => sanitizeAppearance(state),
+
+      merge: (persisted, current) => ({
+        ...current,
+        ...sanitizeAppearance(persisted),
       }),
-
-      /* -------------------- MIGRATION -------------------- */
-
-      migrate: (persistedState) => {
-        return sanitizeAppearance(persistedState);
-      },
-
-      /* -------------------- MERGE -------------------- */
-
-      merge: (persistedState, currentState) => ({
-        ...currentState,
-        ...sanitizeAppearance(persistedState),
-      }),
-
-      /* -------------------- HYDRATION CALLBACK -------------------- */
-
-      onRehydrateStorage: () => {
-        return (_state, error) => {
-          if (error) {
-            console.warn(
-              "Unable to restore appearance preferences:",
-              error
-            );
-          }
-        };
-      },
     }
   )
 );
