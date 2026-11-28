@@ -5,12 +5,22 @@ import { blockUser, unblockUser, getBlockedUsers } from "@/lib/blocks";
 import useChatStore from "./useChatStore";
 import usePresenceStore from "./usePresenceStore";
 
-/* -------------------- CONSTANTS -------------------- */
-
 const CACHE_TTL = 60_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const REFRESH_ERROR = "Block status updated, but conversations could not be refreshed.";
 
-/* -------------------- REQUEST TRACKING -------------------- */
+const EMPTY_CACHE = {
+  loaded: false,
+  loading: false,
+  lastFetchedAt: 0,
+};
+
+const createInitialState = () => ({
+  ...EMPTY_CACHE,
+  blockedUsers: [],
+  pendingUsers: {},
+  error: null,
+});
 
 let generation = 0;
 let listVersion = 0;
@@ -18,407 +28,288 @@ let listRequest = null;
 
 const pendingMutations = new Map();
 
-/* -------------------- INITIAL STATE -------------------- */
-
-const createInitialState = () => ({
-    blockedUsers: [],
-    pendingUsers: {},
-
-    loading: false,
-    loaded: false,
-    error: null,
-
-    lastFetchedAt: 0,
-});
-
-/* -------------------- HELPERS -------------------- */
-
-function getErrorMessage(error, fallback) {
-    return error?.message || fallback;
-}
-
 function invalidateList() {
-    listVersion += 1;
-    listRequest = null;
+  listVersion++;
+  listRequest = null;
 }
-
-function isValidUserId(userId) {
-    return (
-        typeof userId === "string" && UUID_PATTERN.test(userId)
-    );
-}
-
-/* -------------------- CONVERSATION SYNCHRONISATION -------------------- */
 
 function updateConversationBlockStatus(userId, blocked) {
-    useChatStore.setState((state) => {
-        let changed = false;
-        let clearReply = false;
+  useChatStore.setState((state) => {
+    let changed = false;
+    let clearReply = false;
 
-        const conversations = state.conversations.map(
-            (conversation) => {
-                if (
-                    conversation.type !== "private" ||
-                    conversation.other_user_id !== userId
-                ) {
-                    return conversation;
-                }
+    const conversations = state.conversations.map((chat) => {
+      if (
+        chat.type !== "private" ||
+        chat.other_user_id !== userId
+      ) {
+        return chat;
+      }
 
-                if (
-                    conversation.id === state.activeChatId &&
-                    state.replyTo !== null
-                ) {
-                    clearReply = true;
-                }
+      if (chat.id === state.activeChatId && state.replyTo !== null) {
+        clearReply = true;
+      }
 
-                if (
-                    conversation.is_blocked_by_me === blocked &&
-                    conversation.can_send_messages === false
-                ) {
-                    return conversation;
-                }
+      if (
+        chat.is_blocked_by_me === blocked &&
+        chat.can_send_messages === false
+      ) {
+        return chat;
+      }
 
-                changed = true;
+      changed = true;
 
-                return {
-                    ...conversation,
+      return {
+        ...chat,
+        is_blocked_by_me: blocked,
 
-                    is_blocked_by_me: blocked,
-
-                    // Messaging remains disabled until
-                    // authoritative permissions are refreshed.
-                    can_send_messages: false,
-                };
-            }
-        );
-
-        if (!changed && !clearReply) {
-            return state;
-        }
-
-        return {
-            conversations: changed
-                ? conversations
-                : state.conversations,
-
-            replyTo: clearReply
-                ? null
-                : state.replyTo,
-        };
+        // Keep messaging disabled until permissions
+        // have been refreshed from the server.
+        can_send_messages: false,
+      };
     });
+
+    if (!changed && !clearReply) return state;
+
+    return {
+      conversations: changed
+        ? conversations
+        : state.conversations,
+
+      replyTo: clearReply
+        ? null
+        : state.replyTo,
+    };
+  });
 }
 
-/* -------------------- MUTATION HANDLER -------------------- */
+function updatePresenceRestrictions(userId, blocked) {
+  const presence = usePresenceStore.getState();
 
-function mutateBlock({
-    userId,
-    action,
-    set,
-}) {
-    if (!isValidUserId(userId)) {
-        return Promise.reject(
-            new Error("Invalid user ID")
-        );
+  if (blocked) {
+    presence.restrictUser(userId);
+    return;
+  }
+
+  // Unblocking does not guarantee that the other
+  // user has also removed their block.
+  presence.invalidateRestrictions();
+
+  void presence.fetchRestrictedUsers({ force: true });
+}
+
+const useBlockStore = create((set, get) => {
+  function setError(error, fallback) {
+    set({
+      error: error?.message || fallback,
+    });
+  }
+
+  function invalidateCache() {
+    invalidateList();
+    set({ ...EMPTY_CACHE });
+  }
+
+  function fetchBlockedUsers({ force = false } = {}) {
+    if (listRequest) return listRequest;
+
+    const state = get();
+
+    if (
+      !force &&
+      state.loaded &&
+      Date.now() - state.lastFetchedAt < CACHE_TTL
+    ) {
+      return Promise.resolve(state.blockedUsers);
+    }
+
+    const currentGeneration = generation;
+    const currentVersion = listVersion;
+
+    const isCurrent = () =>
+      currentGeneration === generation &&
+      currentVersion === listVersion;
+
+    const request = Promise.resolve()
+      .then(async () => {
+        if (!isCurrent()) return [];
+
+        const users = await getBlockedUsers();
+
+        if (!isCurrent()) return [];
+
+        if (!Array.isArray(users)) {
+          throw new Error("Invalid blocked users response");
+        }
+
+        set({
+          blockedUsers: users,
+          loaded: true,
+          lastFetchedAt: Date.now(),
+        });
+
+        return users;
+      })
+      .catch((error) => {
+        if (isCurrent()) {
+          setError(error, "Failed to retrieve blocked users");
+        }
+
+        throw error;
+      })
+      .finally(() => {
+        if (isCurrent()) {
+          listRequest = null;
+          set({ loading: false });
+        }
+      });
+
+    listRequest = request;
+
+    set({
+      loading: true,
+      error: null,
+    });
+
+    return request;
+  }
+
+  function mutateBlock(userId, action) {
+    if (
+      typeof userId !== "string" ||
+      !UUID_PATTERN.test(userId)
+    ) {
+      return Promise.reject(new Error("Invalid user ID"));
     }
 
     const existing = pendingMutations.get(userId);
 
     if (existing) {
-        // Reuse an identical operation.
-        if (existing.action === action) {
-            return existing.promise;
-        }
-
-        // Prevent overlapping block/unblock operations.
-        return Promise.reject(
-            new Error(
-                "A block operation is already in progress"
-            )
-        );
+      return existing.action === action
+        ? existing.promise
+        : Promise.reject(
+            new Error("A block operation is already in progress")
+          );
     }
 
-    const requestGeneration = generation;
+    const blocked = action === "block";
+    const operation = blocked ? blockUser : unblockUser;
 
-    const isCurrentRequest = () => requestGeneration === generation;
+    const currentGeneration = generation;
 
-    const request = Promise.resolve().then(async () => {
+    const isCurrent = () =>
+      currentGeneration === generation;
+
+    const request = Promise.resolve()
+      .then(async () => {
+        if (!isCurrent()) return false;
+
+        await operation(userId);
+
+        if (!isCurrent()) return false;
+
+        invalidateList();
+
+        set((state) => ({
+          ...EMPTY_CACHE,
+
+          blockedUsers: blocked
+            ? state.blockedUsers
+            : state.blockedUsers.filter(
+                (user) => user.user_id !== userId
+              ),
+        }));
+
+        updateConversationBlockStatus(userId, blocked);
+
+        updatePresenceRestrictions(userId, blocked);
+
         try {
-            if (!isCurrentRequest()) {
-                return false;
-            }
+          const refreshed = await useChatStore
+            .getState()
+            .fetchConversations();
 
-            /* -------------------- DATABASE MUTATION -------------------- */
-
-            if (action === "block") {
-                await blockUser(userId);
-            } else {
-                await unblockUser(userId);
-            }
-
-            if (!isCurrentRequest()) {
-                return false;
-            }
-
-            /* -------------------- INVALIDATE LIST CACHE -------------------- */
-
-            invalidateList();
-
-            set((state) => ({
-                lastFetchedAt: 0,
-                loaded: false,
-                loading: false,
-
-                blockedUsers:
-                    action === "unblock"
-                        ? state.blockedUsers.filter(
-                            (user) => user.user_id !== userId
-                        )
-                        : state.blockedUsers,
-            }));
-
-            /* -------------------- UPDATE LOCAL CONVERSATIONS -------------------- */
-
-            updateConversationBlockStatus(userId, action === "block");
-
-            /* -------------------- UPDATE LOCAL PRESENCE -------------------- */
-
-            const presenceStore = usePresenceStore.getState();
-
-            if (action === "block") {
-                // Immediately hide the blocked user's presence.
-                presenceStore.restrictUser(userId);
-            } else {
-                // Do not immediately expose presence.
-                // The other user may still have us blocked.
-                presenceStore.invalidateRestrictions();
-
-                void presenceStore.fetchRestrictedUsers({
-                    force: true,
-                });
-            }
-
-            /* -------------------- REFRESH PERMISSIONS -------------------- */
-            try {
-                const refreshed = await useChatStore
-                    .getState()
-                    .fetchConversations();
-
-                if (
-                    refreshed !== true && isCurrentRequest()
-                ) {
-                    set({
-                        error: "Block status updated, but conversations could not be refreshed.",
-                    });
-                }
-
-            } catch (error) {
-                if (isCurrentRequest()) {
-                    set({
-                        error:
-                            "Block status updated, but conversations could not be refreshed.",
-                    });
-                }
-            }
-
-            // The database mutation succeeded even if
-            // conversation synchronisation failed.
-
-            return isCurrentRequest();
-
-        } catch (error) {
-            if (isCurrentRequest()) {
-                set({
-                    error: getErrorMessage(
-                        error,
-                        action === "block"
-                            ? "Failed to block user"
-                            : "Failed to unblock user"
-                    ),
-                });
-            }
-
-            throw error;
-
-        } finally {
-            if (isCurrentRequest()) {
-                pendingMutations.delete(userId);
-
-                set((state) => {
-                    const pendingUsers = {
-                        ...state.pendingUsers,
-                    };
-
-                    delete pendingUsers[userId];
-
-                    return { pendingUsers };
-                });
-            }
+          if (refreshed !== true && isCurrent()) {
+            set({ error: REFRESH_ERROR });
+          }
+        } catch {
+          if (isCurrent()) {
+            set({ error: REFRESH_ERROR });
+          }
         }
-    });
 
-    // Register the request before notifying subscribers.
+        return isCurrent();
+      })
+      .catch((error) => {
+        if (isCurrent()) {
+          setError(error, `Failed to ${action} user`);
+        }
 
+        throw error;
+      })
+      .finally(() => {
+        if (!isCurrent()) return;
+
+        pendingMutations.delete(userId);
+
+        set((state) => {
+          const pendingUsers = {
+            ...state.pendingUsers,
+          };
+
+          delete pendingUsers[userId];
+
+          return { pendingUsers };
+        });
+      });
+
+    // Register before notifying Zustand subscribers.
     pendingMutations.set(userId, {
-        action,
-        promise: request,
+      action,
+      promise: request,
     });
 
     set((state) => ({
-        error: null,
+      error: null,
 
-        pendingUsers: {
-            ...state.pendingUsers,
-            [userId]: action,
-        },
+      pendingUsers: {
+        ...state.pendingUsers,
+        [userId]: action,
+      },
     }));
 
     return request;
-}
+  }
 
-/* -------------------- STORE -------------------- */
-
-const useBlockStore = create((set, get) => ({
-
+  return {
     ...createInitialState(),
 
-    /* -------------------- FETCH BLOCKED USERS -------------------- */
-
-    fetchBlockedUsers: ({ force = false } = {}) => {
-        const state = get();
-
-        const cacheValid =
-            state.loaded &&
-            Date.now() - state.lastFetchedAt < CACHE_TTL;
-
-        // Reuse an existing request.
-
-        if (listRequest) {
-            return listRequest;
-        }
-
-        // Return cached users without a database request.
-
-        if (!force && cacheValid) {
-            return Promise.resolve(state.blockedUsers);
-        }
-
-        const requestGeneration = generation;
-        const requestVersion = listVersion;
-
-        const isCurrentRequest = () =>
-            requestGeneration === generation &&
-            requestVersion === listVersion;
-
-        const request = Promise.resolve().then(async () => {
-            try {
-                if (!isCurrentRequest()) {
-                    return [];
-                }
-
-                const users = await getBlockedUsers();
-
-                if (!isCurrentRequest()) {
-                    return [];
-                }
-
-                if (!Array.isArray(users)) {
-                    throw new Error(
-                        "Invalid blocked users response"
-                    );
-                }
-
-                set({
-                    blockedUsers: users,
-                    loaded: true,
-                    lastFetchedAt: Date.now(),
-                });
-
-                return users;
-
-            } catch (error) {
-                if (isCurrentRequest()) {
-                    set({
-                        error: getErrorMessage(
-                            error,
-                            "Failed to retrieve blocked users"
-                        ),
-                    });
-                }
-
-                throw error;
-
-            } finally {
-                if (isCurrentRequest()) {
-                    listRequest = null;
-
-                    set({
-                        loading: false,
-                    });
-                }
-            }
-        });
-
-        // Register before notifying subscribers.
-
-        listRequest = request;
-
-        set({
-            loading: true,
-            error: null,
-        });
-
-        return request;
-    },
-
-    /* -------------------- BLOCK -------------------- */
+    fetchBlockedUsers,
 
     block: (userId) =>
-        mutateBlock({
-            userId,
-            action: "block",
-            set,
-        }),
-
-    /* -------------------- UNBLOCK -------------------- */
+      mutateBlock(userId, "block"),
 
     unblock: (userId) =>
-        mutateBlock({
-            userId,
-            action: "unblock",
-            set,
-        }),
+      mutateBlock(userId, "unblock"),
 
-    /* -------------------- CLEAR ERROR -------------------- */
+    invalidateCache,
 
     clearError: () => {
-        if (get().error !== null) {
-            set({ error: null });
-        }
+      if (get().error !== null) {
+        set({ error: null });
+      }
     },
-
-    /* -------------------- INVALIDATE CACHE -------------------- */
-
-    invalidateCache: () => {
-        invalidateList();
-
-        set({
-            loaded: false,
-            loading: false,
-            lastFetchedAt: 0,
-        });
-    },
-
-    /* -------------------- RESET -------------------- */
 
     reset: () => {
-        generation += 1;
+      generation++;
 
-        invalidateList();
+      invalidateList();
 
-        pendingMutations.clear();
+      pendingMutations.clear();
 
-        set(createInitialState());
+      set(createInitialState());
     },
-}));
+  };
+});
 
 export default useBlockStore;
