@@ -3,324 +3,262 @@
 import { create } from "zustand";
 
 import {
-    isPushSupported,
-    restorePushNotifications,
-    enablePushNotifications,
-    disablePushNotifications,
+  isPushSupported,
+  restorePushNotifications,
+  enablePushNotifications,
+  disablePushNotifications,
 } from "@/lib/pushClient";
 
-/* -------------------- STATE -------------------- */
-
 const INITIAL_STATE = {
-    userId: null,
+  userId: null,
 
-    supported: false,
-    initialized: false,
-    checking: false,
-    loading: false,
+  supported: false,
+  initialized: false,
+  checking: false,
+  loading: false,
 
-    preference: false,
-    enabled: false,
+  preference: false,
+  enabled: false,
 
-    error: null,
-    warning: null,
+  error: null,
+  warning: null,
 
-    signingOut: false,
+  signingOut: false,
 };
 
 let generation = 0;
 let activeRequest = null;
 
-function getErrorMessage(error, fallback) {
-    return error?.message || fallback;
-}
+const usePushStore = create((set, get) => {
+  function runOperation({
+    operation,
+    onSuccess,
+    fallback,
+    busyKey = "loading",
+    initialState = {},
+  }) {
+    const currentGeneration = generation;
 
-/* -------------------- STORE -------------------- */
+    const isCurrent = () =>
+      currentGeneration === generation;
 
-const usePushStore = create((set, get) => ({
+    let resolveOperation;
+    let rejectOperation;
+
+    const operationResult = new Promise((resolve, reject) => {
+      resolveOperation = resolve;
+      rejectOperation = reject;
+    });
+
+    const request = operationResult
+      .then((result) => {
+        if (!isCurrent()) return false;
+
+        set({
+          ...onSuccess(result),
+          initialized: true,
+        });
+
+        return true;
+      })
+      .catch((error) => {
+        if (isCurrent()) {
+          set({
+            error: error?.message || fallback,
+          });
+        }
+
+        return false;
+      })
+      .finally(() => {
+        if (activeRequest === request) {
+          activeRequest = null;
+        }
+
+        if (isCurrent()) {
+          set({ [busyKey]: false });
+        }
+      });
+
+    // Register before notifying store subscribers.
+    activeRequest = request;
+
+    set({
+      ...initialState,
+      [busyKey]: true,
+      error: null,
+      warning: null,
+    });
+
+    try {
+      if (!isCurrent() || get().signingOut) {
+        throw new Error("Notification operation cancelled");
+      }
+
+      // Execute synchronously to preserve browser
+      // user activation when requesting permission.
+      resolveOperation(operation());
+    } catch (error) {
+      rejectOperation(error);
+    }
+
+    return request;
+  }
+
+  function applyResult(result) {
+    return {
+      enabled: result.enabled,
+      preference: result.preference,
+    };
+  }
+
+  function canMutate() {
+    const state = get();
+
+    return (
+      Boolean(state.userId) &&
+      state.supported &&
+      !state.checking &&
+      !state.loading &&
+      !state.signingOut &&
+      !activeRequest
+    );
+  }
+
+  function initialize(userId, { force = false } = {}) {
+    const state = get();
+
+    if (!userId || state.signingOut) {
+      return Promise.resolve(false);
+    }
+
+    if (activeRequest) {
+      if (state.userId === userId) {
+        return activeRequest;
+      }
+
+      const currentGeneration = generation;
+
+      return activeRequest.then(() => {
+        if (
+          generation !== currentGeneration ||
+          get().signingOut
+        ) {
+          return false;
+        }
+
+        return initialize(userId, { force });
+      });
+    }
+
+    if (
+      !force &&
+      state.initialized &&
+      state.userId === userId
+    ) {
+      return Promise.resolve(true);
+    }
+
+    generation++;
+
+    const supported = isPushSupported();
+
+    if (!supported) {
+      set({
+        ...INITIAL_STATE,
+        userId,
+        initialized: true,
+      });
+
+      return Promise.resolve(true);
+    }
+
+    return runOperation({
+      operation: () => restorePushNotifications(userId),
+
+      onSuccess: applyResult,
+
+      fallback: "Failed to restore notifications",
+
+      busyKey: "checking",
+
+      initialState: {
+        ...INITIAL_STATE,
+        userId,
+        supported: true,
+      },
+    });
+  }
+
+  function enable() {
+    if (!canMutate()) {
+      return Promise.resolve(false);
+    }
+
+    return runOperation({
+      operation: enablePushNotifications,
+
+      onSuccess: applyResult,
+
+      fallback: "Failed to enable notifications",
+    });
+  }
+
+  function disable() {
+    if (!canMutate()) {
+      return Promise.resolve(false);
+    }
+
+    const { userId } = get();
+
+    return runOperation({
+      operation: () => disablePushNotifications(userId),
+
+      onSuccess: (result) => ({
+        enabled: false,
+        preference: false,
+        warning: result.warning || null,
+      }),
+
+      fallback: "Failed to disable notifications",
+    });
+  }
+
+  return {
     ...INITIAL_STATE,
 
-    /* -------------------- INITIALIZE -------------------- */
+    initialize,
+    enable,
+    disable,
 
-    initialize: (userId, { force = false } = {}) => {
-        if (!userId) {
-            return Promise.resolve(false);
-        }
-
-        const state = get();
-
-        if (state.signingOut) {
-            return Promise.resolve(false);
-        }
-
-        if (activeRequest) {
-            if (state.userId === userId) {
-                return activeRequest;
-            }
-
-            return activeRequest.then(() =>
-                get().initialize(userId, { force })
-            );
-        }
-
-        if (
-            !force &&
-            state.initialized &&
-            state.userId === userId
-        ) {
-            return Promise.resolve(true);
-        }
-
-        const currentGeneration = ++generation;
-
-        const supported = isPushSupported();
-
-        const isCurrent = () =>
-            currentGeneration === generation;
-
-        if (!supported) {
-            set({
-                ...INITIAL_STATE,
-                userId,
-                supported: false,
-                initialized: true,
-            });
-
-            return Promise.resolve(true);
-        }
-
-        const request = Promise.resolve().then(async () => {
-            try {
-                if (!isCurrent()) return false;
-
-                const result =
-                    await restorePushNotifications(userId);
-
-                if (!isCurrent()) return false;
-
-                set({
-                    preference: result.preference,
-                    enabled: result.enabled,
-                    initialized: true,
-                });
-
-                return true;
-
-            } catch (error) {
-                if (isCurrent()) {
-                    set({
-                        error: getErrorMessage(
-                            error,
-                            "Failed to restore notifications"
-                        ),
-                    });
-                }
-
-                return false;
-
-            } finally {
-                if (activeRequest === request) {
-                    activeRequest = null;
-                }
-
-                if (isCurrent()) {
-                    set({ checking: false });
-                }
-            }
-        });
-
-        activeRequest = request;
-
-        set({
-            ...INITIAL_STATE,
-            userId,
-            supported: true,
-            checking: true,
-        });
-
-        return request;
-    },
-
-    /* -------------------- ENABLE -------------------- */
-
-    enable: () => {
-        const state = get();
-
-        if (
-            !state.userId ||
-            !state.supported ||
-            state.checking ||
-            state.loading ||
-            state.signingOut ||
-            activeRequest
-        ) {
-            return Promise.resolve(false);
-        }
-
-        const currentGeneration = generation;
-
-        const isCurrent = () =>
-            currentGeneration === generation;
-
-        set({
-            loading: true,
-            error: null,
-            warning: null,
-        });
-
-        // Start directly from the click handler so that
-        // notification permission retains user activation.
-        const operation = enablePushNotifications();
-
-        const request = operation
-            .then((result) => {
-                if (!isCurrent()) return false;
-
-                set({
-                    enabled: result.enabled,
-                    preference: result.preference,
-                    initialized: true,
-                });
-
-                return true;
-            })
-            .catch((error) => {
-                if (isCurrent()) {
-                    set({
-                        error: getErrorMessage(
-                            error,
-                            "Failed to enable notifications"
-                        ),
-                    });
-                }
-
-                return false;
-            })
-            .finally(() => {
-                if (activeRequest === request) {
-                    activeRequest = null;
-                }
-
-                if (isCurrent()) {
-                    set({ loading: false });
-                }
-            });
-
-        activeRequest = request;
-
-        return request;
-    },
-
-    /* -------------------- DISABLE -------------------- */
-
-    disable: () => {
-        const state = get();
-
-        if (
-            !state.userId ||
-            !state.supported ||
-            state.checking ||
-            state.loading ||
-            state.signingOut ||
-            activeRequest
-        ) {
-            return Promise.resolve(false);
-        }
-
-        const currentGeneration = generation;
-
-        const isCurrent = () =>
-            currentGeneration === generation;
-
-        const request = Promise.resolve()
-            .then(() =>
-                disablePushNotifications(state.userId)
-            )
-            .then((result) => {
-                if (!isCurrent()) return false;
-
-                set({
-                    enabled: false,
-                    preference: false,
-                    warning: result.warning || null,
-                    initialized: true,
-                });
-
-                return true;
-            })
-            .catch((error) => {
-                if (isCurrent()) {
-                    set({
-                        error: getErrorMessage(
-                            error,
-                            "Failed to disable notifications"
-                        ),
-                    });
-                }
-
-                return false;
-            })
-            .finally(() => {
-                if (activeRequest === request) {
-                    activeRequest = null;
-                }
-
-                if (isCurrent()) {
-                    set({ loading: false });
-                }
-            });
-
-        activeRequest = request;
-
-        set({
-            loading: true,
-            error: null,
-            warning: null,
-        });
-
-        return request;
-    },
-
-    /* -------------------- REFRESH -------------------- */
-
-    refresh: () => {
-        const { userId } = get();
-
-        return get().initialize(userId, {
-            force: true,
-        });
-    },
-
-    /* -------------------- ERRORS -------------------- */
+    refresh: () =>
+      initialize(get().userId, { force: true }),
 
     clearError: () => {
-        set({
-            error: null,
-            warning: null,
-        });
+      set({
+        error: null,
+        warning: null,
+      });
     },
 
-    /* -------------------- LOGOUT -------------------- */
-
     prepareForLogout: async () => {
-        set({ signingOut: true });
+      set({ signingOut: true });
 
-        if (activeRequest) {
-            await activeRequest;
-        }
+      if (activeRequest) {
+        await activeRequest;
+      }
     },
 
     cancelLogout: () => {
-        set({ signingOut: false });
+      set({ signingOut: false });
     },
-
-    /* -------------------- RESET -------------------- */
 
     reset: () => {
-        generation += 1;
+      generation++;
 
-        set({ ...INITIAL_STATE });
+      set({ ...INITIAL_STATE });
     },
-}));
+  };
+});
 
 export default usePushStore;
