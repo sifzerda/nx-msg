@@ -9,24 +9,18 @@ import {
   sendWebPush,
   isValidPushEndpoint,
 } from "@/lib/webPush";
+
 import { isUuid } from "@/utils/validation";
-import {
-  getNotificationPreview,
-} from "@/utils/messageUtils";
+import { getNotificationPreview } from "@/utils/messageUtils";
 
 export const runtime = "nodejs";
 
 /* -------------------- CONSTANTS -------------------- */
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-const EXPIRED_STATUS_CODES = new Set([
-  404,
-  410,
-]);
+const EXPIRED_STATUS_CODES = new Set([404, 410]);
 
 const DELIVERY_BATCH_SIZE = 10;
+const MAX_TITLE_LENGTH = 120;
 
 /* -------------------- RESPONSE -------------------- */
 
@@ -36,15 +30,6 @@ function json(body, status = 200) {
     headers: {
       "Cache-Control": "no-store",
     },
-  });
-}
-
-function emptyDeliveryResult() {
-  return json({
-    success: true,
-    sent: 0,
-    failed: 0,
-    expired: 0,
   });
 }
 
@@ -98,17 +83,16 @@ async function getPushDelivery(admin, messageId) {
 
   if (error) throw error;
 
-  if (data === null) {
-    return null;
-  }
+  if (data === null) return null;
 
   if (
     !data?.message ||
+    !isUuid(data.message.id) ||
+    !isUuid(data.message.conversation_id) ||
+    data.message.id !== messageId ||
     !Array.isArray(data.subscriptions)
   ) {
-    throw new Error(
-      "Invalid push delivery response"
-    );
+    throw new Error("Invalid push delivery response");
   }
 
   return data;
@@ -116,23 +100,57 @@ async function getPushDelivery(admin, messageId) {
 
 /* -------------------- NOTIFICATION -------------------- */
 
-function createNotification(message, sender) {
+function createNotifications({
+  message,
+  sender,
+  conversation,
+  subscriptions,
+}) {
   const senderName =
     sender?.display_name?.trim() ||
     sender?.username?.trim() ||
     "Someone";
 
-  return JSON.stringify({
+  const isGroup = conversation?.type === "group";
+
+  const groupName =
+    conversation?.name?.trim() || "Group chat";
+
+  const base = {
     messageId: message.id,
-
-    title: `${senderName} sent you a message`,
-
     body: getNotificationPreview(message),
-
     url: `/messages/${message.conversation_id}`,
-
     tag: `chat:${message.conversation_id}`,
+  };
+
+  const standardTitle = isGroup
+    ? `${senderName} · ${groupName}`
+    : `${senderName} sent you a message`;
+
+  const standard = JSON.stringify({
+    ...base,
+    title: standardTitle.slice(0, MAX_TITLE_LENGTH),
   });
+
+  const hasMentions =
+    isGroup &&
+    subscriptions.some(
+      (subscription) =>
+        subscription.is_mentioned === true
+    );
+
+  const mention = hasMentions
+    ? JSON.stringify({
+        ...base,
+        title: `${senderName} mentioned you in ${groupName}`
+          .slice(0, MAX_TITLE_LENGTH),
+      })
+    : standard;
+
+  return {
+    standard,
+    mention,
+  };
 }
 
 /* -------------------- DELIVERY -------------------- */
@@ -146,16 +164,11 @@ async function deliverNotification(
   }
 
   try {
-    await sendWebPush(
-      subscription,
-      notification
-    );
+    await sendWebPush(subscription, notification);
 
     return "sent";
   } catch (error) {
-    return EXPIRED_STATUS_CODES.has(
-      error?.statusCode
-    )
+    return EXPIRED_STATUS_CODES.has(error?.statusCode)
       ? "expired"
       : "failed";
   }
@@ -187,7 +200,7 @@ async function removeExpiredSubscriptions(
 async function deliverNotifications(
   admin,
   subscriptions,
-  notification
+  notifications
 ) {
   const counts = {
     sent: 0,
@@ -211,7 +224,9 @@ async function deliverNotifications(
       batch.map((subscription) =>
         deliverNotification(
           subscription,
-          notification
+          subscription.is_mentioned === true
+            ? notifications.mention
+            : notifications.standard
         )
       )
     );
@@ -243,10 +258,7 @@ async function deliverNotifications(
 
 export async function POST(request) {
   if (!validSecret(request)) {
-    return json(
-      { error: "Unauthorized" },
-      401
-    );
+    return json({ error: "Unauthorized" }, 401);
   }
 
   try {
@@ -255,10 +267,7 @@ export async function POST(request) {
       .catch(() => null);
 
     if (!isValidEvent(payload)) {
-      return json(
-        { error: "Invalid event" },
-        400
-      );
+      return json({ error: "Invalid event" }, 400);
     }
 
     const messageId = payload.record?.id;
@@ -274,7 +283,7 @@ export async function POST(request) {
 
     const delivery = await getPushDelivery(
       admin,
-      messageId
+      messageId.toLowerCase()
     );
 
     if (!delivery) {
@@ -284,25 +293,23 @@ export async function POST(request) {
       );
     }
 
-    const {
-      message,
-      sender,
-      subscriptions,
-    } = delivery;
+    const { subscriptions } = delivery;
 
     if (!subscriptions.length) {
-      return emptyDeliveryResult();
+      return json({
+        success: true,
+        sent: 0,
+        failed: 0,
+        expired: 0,
+      });
     }
 
-    const notification = createNotification(
-      message,
-      sender
-    );
+    const notifications = createNotifications(delivery);
 
     const counts = await deliverNotifications(
       admin,
       subscriptions,
-      notification
+      notifications
     );
 
     return json(
@@ -313,13 +320,10 @@ export async function POST(request) {
       counts.failed ? 503 : 200
     );
   } catch (error) {
-    console.error(
-      "[Push] Delivery failed:",
-      {
-        message: error?.message,
-        code: error?.code,
-      }
-    );
+    console.error("[Push] Delivery failed:", {
+      message: error?.message,
+      code: error?.code,
+    });
 
     return json(
       { error: "Push delivery failed" },

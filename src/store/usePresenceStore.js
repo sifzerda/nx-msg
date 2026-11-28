@@ -2,11 +2,10 @@
 
 import { create } from "zustand";
 import { shallow } from "zustand/shallow";
-
+import { isUuid } from "@/utils/validation";
 import { getRestrictedUserIds } from "@/lib/blocks";
 
 const CACHE_TTL = 60_000;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const createInitialState = () => ({
   userId: null,
@@ -25,12 +24,11 @@ const createInitialState = () => ({
 let requestVersion = 0;
 let restrictionRequest = null;
 
-function isValidUserId(id) {
-  return typeof id === "string" && UUID_PATTERN.test(id);
-}
-
 function createUserSet(users) {
-  return new Set(Array.isArray(users) ? users.filter(isValidUserId) : []
+  return new Set(
+    Array.isArray(users)
+      ? users.filter(isUuid)
+      : []
   );
 }
 
@@ -127,7 +125,7 @@ const usePresenceStore = create((set, get) => {
 
         if (
           !Array.isArray(users) ||
-          !users.every(isValidUserId)
+          !users.every(isUuid)
         ) {
           throw new Error(
             "Invalid restricted users response"
@@ -179,10 +177,7 @@ const usePresenceStore = create((set, get) => {
   function restrictUser(userId) {
     const state = get();
 
-    if (
-      !state.userId ||
-      !isValidUserId(userId)
-    ) {
+    if (!state.userId || !isUuid(userId)) {
       return;
     }
 
@@ -226,7 +221,7 @@ const usePresenceStore = create((set, get) => {
   }
 
   function initialize(userId) {
-    if (!isValidUserId(userId)) {
+    if (!isUuid(userId)) {
       return Promise.resolve(false);
     }
 

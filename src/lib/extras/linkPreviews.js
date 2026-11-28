@@ -148,7 +148,7 @@ function getImageKey(userId, messageId, imageUrl) {
   return `${getCacheKey(userId, messageId)}:${imageUrl}`;
 }
 
-export function getCachedPreviewImage(
+function getCachedPreviewImage(
   userId,
   messageId,
   imageUrl
@@ -460,7 +460,7 @@ export function clearLinkPreviewCache() {
 
 /* -------------------- DIAGNOSTICS -------------------- */
 
-export function getLinkPreviewCacheStats() {
+function getLinkPreviewCacheStats() {
   return {
     metadataEntries: metadataCache.size,
     imageEntries: imageCache.size,

@@ -22,7 +22,7 @@ import {
 
 import useChatStore from "@/store/useChatStore";
 
-import useReadReceipts from "@/hooks/useReadReceipts";
+import useConversationMembers from "@/hooks/useConversationMembers";
 import useTypingIndicator from "@/hooks/useTypingIndicator";
 import useCurrentDay from "@/hooks/useCurrentDay";
 import useReplyMessages from "@/hooks/useReplyMessages";
@@ -59,8 +59,8 @@ function getChatName(chat) {
   return chat?.type === "group"
     ? chat.group_name || "Unnamed Group"
     : chat?.other_display_name ||
-        chat?.other_username ||
-        "Conversation";
+    chat?.other_username ||
+    "Conversation";
 }
 
 function scrollToBottom(container) {
@@ -79,9 +79,8 @@ function getTypingLabel(names) {
   }
 
   if (count <= 3) {
-    return `${names.slice(0, -1).join(", ")} and ${
-      names[count - 1]
-    } are typing...`;
+    return `${names.slice(0, -1).join(", ")} and ${names[count - 1]
+      } are typing...`;
   }
 
   return `${count} people are typing...`;
@@ -89,6 +88,43 @@ function getTypingLabel(names) {
 
 function setReplyTo(message) {
   useChatStore.getState().setReplyTo(message);
+}
+
+function getGroupReadSummary(
+  members,
+  createdAt
+) {
+  const messageTime = Date.parse(createdAt);
+
+  if (!Number.isFinite(messageTime)) {
+    return null;
+  }
+
+  let total = 0;
+  let read = 0;
+
+  for (const member of members) {
+    if (
+      !member.joinedTime ||
+      member.joinedTime > messageTime
+    ) {
+      continue;
+    }
+
+    total++;
+
+    if (
+      member.readTime > 0 &&
+      member.readTime >= messageTime
+    ) {
+      read++;
+    }
+  }
+
+  return {
+    read,
+    total,
+  };
 }
 
 /* -------------------- DATE SEPARATOR -------------------- */
@@ -151,34 +187,36 @@ function useGroupProfiles({
   replyMessages,
   typingUsers,
   userId,
+  memberProfiles,
+  membershipLoading,
 }) {
-  const [profiles, setProfiles] = useState(EMPTY_PROFILES);
+  const [historicalProfiles, setHistoricalProfiles] = useState(EMPTY_PROFILES);
 
   const senderKey = useMemo(() => {
-    if (!isGroup) return "";
+    if (!isGroup || membershipLoading) return "";
 
     const ids = new Set();
 
-    function addSender(message) {
-      const id = message?.sender_id;
-
-      if (id && id !== userId) {
+    function addId(id) {
+      if (
+        id &&
+        id !== userId &&
+        !memberProfiles[id]
+      ) {
         ids.add(id);
       }
     }
 
     for (const message of messages) {
-      addSender(message);
+      addId(message.sender_id);
     }
 
     for (const message of replyMessages.values()) {
-      addSender(message);
+      addId(message?.sender_id);
     }
 
     for (const id of typingUsers) {
-      if (id && id !== userId) {
-        ids.add(id);
-      }
+      addId(id);
     }
 
     return [...ids].sort().join(",");
@@ -188,6 +226,8 @@ function useGroupProfiles({
     replyMessages,
     typingUsers,
     userId,
+    memberProfiles,
+    membershipLoading,
   ]);
 
   useEffect(() => {
@@ -203,7 +243,7 @@ function useGroupProfiles({
 
         if (!active || !result) return;
 
-        setProfiles((current) => {
+        setHistoricalProfiles((current) => {
           let next = current;
 
           for (const [id, profile] of Object.entries(result)) {
@@ -243,7 +283,13 @@ function useGroupProfiles({
     };
   }, [senderKey]);
 
-  return profiles;
+  return useMemo(
+    () => ({
+      ...historicalProfiles,
+      ...memberProfiles,
+    }),
+    [historicalProfiles, memberProfiles]
+  );
 }
 
 /* -------------------- MESSAGE ROW -------------------- */
@@ -253,6 +299,9 @@ const MessageRow = memo(function MessageRow({
   userId,
   isGroup,
   isRead,
+  groupReadCount,
+  groupRecipientCount,
+  receiptMembers,
   senderName,
   quotedMessage,
   quotedSenderName,
@@ -279,6 +328,9 @@ const MessageRow = memo(function MessageRow({
         isOwn={isOwn}
         isRead={isRead}
         showReadStatus={!isGroup}
+        groupReadCount={groupReadCount}
+        groupRecipientCount={groupRecipientCount}
+        receiptMembers={receiptMembers}
         quotedMessage={quotedMessage}
         quotedSenderName={quotedSenderName}
         onReply={onReply}
@@ -300,6 +352,9 @@ const MessageList = memo(function MessageList({
   isGroup,
   canSendMessages,
   recipientReadTime,
+  receiptMembers = EMPTY_ARRAY,
+  membershipLoading,
+  membershipError,
   replyMessages,
   reactionsByMessage,
   getSenderName,
@@ -314,6 +369,42 @@ const MessageList = memo(function MessageList({
     () => groupMessagesByDate(messages),
     [messages]
   );
+
+  const groupReadSummaries = useMemo(() => {
+    const summaries = new Map();
+
+    if (
+      !isGroup ||
+      membershipLoading ||
+      membershipError
+    ) {
+      return summaries;
+    }
+
+    for (const message of messages) {
+      if (message.sender_id !== userId) {
+        continue;
+      }
+
+      const summary = getGroupReadSummary(
+        receiptMembers,
+        message.created_at
+      );
+
+      if (summary) {
+        summaries.set(message.id, summary);
+      }
+    }
+
+    return summaries;
+  }, [
+    messages,
+    userId,
+    isGroup,
+    receiptMembers,
+    membershipLoading,
+    membershipError,
+  ]);
 
   const onReply = canSendMessages
     ? setReplyTo
@@ -351,17 +442,23 @@ const MessageList = memo(function MessageList({
             />
 
             {group.messages.map((message) => {
-              const isOwn = message.sender_id === userId;
+              const isOwn =
+                message.sender_id === userId;
 
-              const quotedMessage = replyMessages.get(
-                message.reply_to_id
-              );
+              const quotedMessage =
+                replyMessages.get(
+                  message.reply_to_id
+                );
 
               const isRead =
                 !isGroup &&
                 isOwn &&
                 recipientReadTime > 0 &&
-                recipientReadTime >= Date.parse(message.created_at);
+                recipientReadTime >=
+                Date.parse(message.created_at);
+
+              const summary =
+                groupReadSummaries.get(message.id);
 
               return (
                 <MessageRow
@@ -370,6 +467,13 @@ const MessageList = memo(function MessageList({
                   userId={userId}
                   isGroup={isGroup}
                   isRead={isRead}
+                  groupReadCount={summary?.read}
+                  groupRecipientCount={summary?.total}
+                  receiptMembers={
+                    summary
+                      ? receiptMembers
+                      : undefined
+                  }
                   senderName={
                     isGroup && !isOwn
                       ? getSenderName(message)
@@ -487,11 +591,10 @@ const ConversationHeader = memo(function ConversationHeader({
           aria-label="Search conversation"
           aria-expanded={searchOpen}
           title="Search conversation"
-          className={`flex shrink-0 items-center justify-center rounded-lg border p-2.5 transition-colors ${
-            searchOpen
-              ? "border-blue-500 bg-blue-600/20 text-blue-400"
-              : "border-gray-700 bg-gray-900 text-gray-300 hover:border-blue-500 hover:text-white"
-          }`}
+          className={`flex shrink-0 items-center justify-center rounded-lg border p-2.5 transition-colors ${searchOpen
+            ? "border-blue-500 bg-blue-600/20 text-blue-400"
+            : "border-gray-700 bg-gray-900 text-gray-300 hover:border-blue-500 hover:text-white"
+            }`}
         >
           <Search size={18} />
         </button>
@@ -618,15 +721,18 @@ function ChatSession({
     messages
   );
 
-  const recipientReadAt = useReadReceipts(
+  const {
+    otherMembers,
+    profiles: memberProfiles,
+    receiptMembers,
+    recipientReadTime,
+    loading: membershipLoading,
+    error: membershipError,
+  } = useConversationMembers(
     conversationId,
     userId,
-    isPrivate
+    isPrivate || isGroup
   );
-
-  const recipientReadTime = recipientReadAt
-    ? Date.parse(recipientReadAt)
-    : 0;
 
   const {
     typingUsers,
@@ -644,6 +750,8 @@ function ChatSession({
     replyMessages,
     typingUsers,
     userId,
+    memberProfiles,
+    membershipLoading,
   });
 
   /* -------------------- SENDER NAMES -------------------- */
@@ -714,8 +822,8 @@ function ChatSession({
 
     shouldScrollRef.current =
       container.scrollHeight -
-        container.scrollTop -
-        container.clientHeight <=
+      container.scrollTop -
+      container.clientHeight <=
       SCROLL_THRESHOLD;
   }, []);
 
@@ -843,6 +951,9 @@ function ChatSession({
         isGroup={isGroup}
         canSendMessages={canSendMessages}
         recipientReadTime={recipientReadTime}
+        receiptMembers={receiptMembers}
+        membershipLoading={membershipLoading}
+        membershipError={membershipError}
         replyMessages={replyMessages}
         reactionsByMessage={reactionsByMessage}
         getSenderName={getSenderName}
@@ -865,6 +976,12 @@ function ChatSession({
           </p>
         )}
 
+        {membershipError && (
+          <p role="alert" className="px-4 py-2 text-xs text-amber-400">
+            Unable to synchronise conversation members.
+          </p>
+        )}
+
         {canSendMessages ? (
           <>
             <TypingIndicator names={typingNames} />
@@ -874,7 +991,11 @@ function ChatSession({
               onTyping={notifyTyping}
               onStopTyping={stopTyping}
               replySenderName={getSenderName(replyTo)}
+              mentionMembers={
+                isGroup ? otherMembers : EMPTY_ARRAY
+              }
             />
+
           </>
         ) : (
           <BlockedComposer

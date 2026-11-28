@@ -1,0 +1,2580 @@
+
+// C:\Users\tydam\bootcamp\nx-msg\src\hooks\useTypingIndicator.js
+
+// src/hooks/useTypingIndicator.js
+
+"use client";
+
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+
+import { createTypingChannel } from "@/lib/extras/typing";
+
+const BROADCAST_INTERVAL = 3000;
+const INACTIVITY_TIMEOUT = 2000;
+const REMOTE_TIMEOUT = 7000;
+
+const EMPTY_USERS = Object.freeze([]);
+
+export default function useTypingIndicator(
+  conversationId,
+  userId,
+  { enabled = true } = {}
+) {
+  const sessionRef = useRef(null);
+  const [typingState, setTypingState] = useState(null);
+  const canUseTyping = Boolean(enabled && conversationId && userId);
+
+  /* -------------------- PUBLIC ACTIONS -------------------- */
+
+  const notifyTyping = useCallback(
+    (value) => {
+      const session = sessionRef.current;
+
+      if (
+        !canUseTyping ||
+        session?.conversationId !== conversationId ||
+        session?.userId !== userId
+      ) {
+        return;
+      }
+
+      session.notify(value);
+    },
+    [canUseTyping, conversationId, userId]
+  );
+
+  const stopTyping = useCallback(() => {
+    const session = sessionRef.current;
+
+    if (
+      session?.conversationId === conversationId &&
+      session?.userId === userId
+    ) {
+      session.stop();
+    }
+  }, [conversationId, userId]);
+
+  /* -------------------- SESSION -------------------- */
+
+  useEffect(() => {
+    if (!canUseTyping) return;
+
+    let active = true;
+    let connection = null;
+
+    let localTyping = false;
+    let lastBroadcastAt = null;
+    let inactivityTimer = null;
+
+    const remoteTimers = new Map();
+
+    const session = {
+      conversationId,
+      userId,
+      notify,
+      stop,
+    };
+
+    sessionRef.current = session;
+
+    /* -------------------- LOCAL TYPING -------------------- */
+
+    function broadcastTyping() {
+      if (!active || !localTyping) return;
+
+      const now = Date.now();
+
+      if (
+        lastBroadcastAt !== null &&
+        now - lastBroadcastAt < BROADCAST_INTERVAL
+      ) {
+        return;
+      }
+
+      if (connection?.broadcast(true)) {
+        lastBroadcastAt = now;
+      }
+    }
+
+    function stop() {
+      clearTimeout(inactivityTimer);
+      inactivityTimer = null;
+
+      if (!localTyping) return;
+
+      localTyping = false;
+      lastBroadcastAt = null;
+
+      connection?.broadcast(false);
+    }
+
+    function notify(value) {
+      if (!active) return;
+
+      if (
+        typeof value !== "string" ||
+        !value.trim() ||
+        document.visibilityState === "hidden"
+      ) {
+        stop();
+        return;
+      }
+
+      localTyping = true;
+
+      broadcastTyping();
+
+      clearTimeout(inactivityTimer);
+
+      inactivityTimer = setTimeout(
+        stop,
+        INACTIVITY_TIMEOUT
+      );
+    }
+
+    /* -------------------- REMOTE TYPING -------------------- */
+
+    function publishUsers() {
+      if (!active) return;
+
+      setTypingState({
+        session,
+        conversationId,
+        userId,
+        users: remoteTimers.size
+          ? [...remoteTimers.keys()]
+          : EMPTY_USERS,
+      });
+    }
+
+    function removeUser(id) {
+      if (!remoteTimers.has(id)) return;
+
+      clearTimeout(remoteTimers.get(id));
+
+      remoteTimers.delete(id);
+
+      publishUsers();
+    }
+
+    function clearRemoteUsers(publish = true) {
+      if (!remoteTimers.size) return;
+
+      for (const timer of remoteTimers.values()) {
+        clearTimeout(timer);
+      }
+
+      remoteTimers.clear();
+
+      if (publish) {
+        publishUsers();
+      }
+    }
+
+    function handleTyping(payload) {
+      if (
+        !active ||
+        !payload ||
+        typeof payload.userId !== "string" ||
+        payload.userId === userId ||
+        typeof payload.typing !== "boolean"
+      ) {
+        return;
+      }
+
+      const {
+        userId: senderId,
+        typing,
+      } = payload;
+
+      if (!typing) {
+        removeUser(senderId);
+        return;
+      }
+
+      const alreadyTyping =
+        remoteTimers.has(senderId);
+
+      clearTimeout(remoteTimers.get(senderId));
+
+      remoteTimers.set(
+        senderId,
+        setTimeout(() => {
+          removeUser(senderId);
+        }, REMOTE_TIMEOUT)
+      );
+
+      // Heartbeats only extend the expiry timer.
+      // They do not need to update React state.
+      if (!alreadyTyping) {
+        publishUsers();
+      }
+    }
+
+    /* -------------------- CONNECTION -------------------- */
+
+    function handleStatus(connected) {
+      if (!active) return;
+
+      lastBroadcastAt = null;
+
+      if (connected) {
+        broadcastTyping();
+      } else {
+        clearRemoteUsers();
+      }
+    }
+
+    async function connect() {
+      try {
+        const result = await createTypingChannel({
+          conversationId,
+          userId,
+          onTyping: handleTyping,
+          onStatus: handleStatus,
+        });
+
+        if (!active) {
+          result.close();
+          return;
+        }
+
+        connection = result;
+
+        // Handles a subscription becoming ready
+        // before the asynchronous setup completes.
+        if (connection.isConnected()) {
+          broadcastTyping();
+        }
+      } catch (error) {
+        if (active) {
+          console.error(
+            "Failed to connect typing channel:",
+            error
+          );
+        }
+      }
+    }
+
+    /* -------------------- VISIBILITY -------------------- */
+
+    function handleVisibility() {
+      if (document.visibilityState === "hidden") {
+        stop();
+      }
+    }
+
+    document.addEventListener(
+      "visibilitychange",
+      handleVisibility
+    );
+
+    void connect();
+
+    /* -------------------- CLEANUP -------------------- */
+
+    return () => {
+      active = false;
+
+      stop();
+
+      clearRemoteUsers(false);
+
+      connection?.close();
+
+      if (sessionRef.current === session) {
+        sessionRef.current = null;
+      }
+
+      document.removeEventListener(
+        "visibilitychange",
+        handleVisibility
+      );
+    };
+  }, [conversationId, userId, canUseTyping]);
+
+  /* -------------------- VISIBLE USERS -------------------- */
+
+  const typingUsers =
+    canUseTyping &&
+    typingState?.conversationId === conversationId &&
+    typingState?.userId === userId
+      ? typingState.users
+      : EMPTY_USERS;
+
+  return {
+    typingUsers,
+    notifyTyping,
+    stopTyping,
+  };
+}
+
+// C:\Users\tydam\bootcamp\nx-msg\src\lib\extras\typing.js
+
+// src/lib/extras/typing.js
+
+import { createClient } from "@/lib/supabase/client";
+import { isUuid } from "@/utils/validation";
+
+const supabase = createClient();
+
+export async function createTypingChannel({
+  conversationId,
+  userId,
+  onTyping,
+  onStatus,
+}) {
+  if (!isUuid(conversationId) || !isUuid(userId)) {
+    throw new Error("Invalid conversation or user ID");
+  }
+
+  await supabase.realtime.setAuth();
+
+  let closed = false;
+  let connected = false;
+  let advertisedTyping = false;
+
+  const channel = supabase.channel(`typing:${conversationId}`,
+    {
+      config: {
+        private: true,
+        broadcast: {
+          self: false,
+          ack: false,
+        },
+      },
+    }
+  );
+
+  function handleTyping({ payload }) {
+    if (
+      closed ||
+      !connected ||
+      !isUuid(payload?.userId) ||
+      payload.userId === userId ||
+      typeof payload.typing !== "boolean"
+    ) {
+      return;
+    }
+
+    onTyping?.({
+      userId: payload.userId,
+      typing: payload.typing,
+    });
+  }
+
+  function handleStatus(status, error) {
+    if (closed) return;
+
+    const nextConnected = status === "SUBSCRIBED";
+
+    if (connected !== nextConnected) {
+      connected = nextConnected;
+
+      if (!connected) {
+        advertisedTyping = false;
+      }
+
+      onStatus?.(connected);
+    }
+
+    if (
+      status === "CHANNEL_ERROR" ||
+      status === "TIMED_OUT"
+    ) {
+      console.warn("Typing channel:", status, error);
+    }
+  }
+
+  function broadcast(typing) {
+    if (
+      closed ||
+      !connected ||
+      typeof typing !== "boolean"
+    ) {
+      return false;
+    }
+
+    // Repeated true events are intentional heartbeats.
+    // Repeated false events are unnecessary.
+    if (!typing && !advertisedTyping) {
+      return false;
+    }
+
+    advertisedTyping = typing;
+
+    void channel
+      .send({
+        type: "broadcast",
+        event: "typing",
+        payload: {
+          userId,
+          typing,
+        },
+      })
+      .then((status) => {
+        if (!closed && status !== "ok") {
+          console.warn(
+            "Typing broadcast status:",
+            status
+          );
+        }
+      })
+      .catch((error) => {
+        if (!closed) {
+          console.warn(
+            "Typing broadcast failed:",
+            error
+          );
+        }
+      });
+
+    return true;
+  }
+
+  function close() {
+    if (closed) return;
+
+    // Only sends false if typing was advertised.
+    broadcast(false);
+
+    closed = true;
+    connected = false;
+
+    void supabase.removeChannel(channel);
+  }
+
+  try {
+    channel
+      .on(
+        "broadcast",
+        { event: "typing" },
+        handleTyping
+      )
+      .subscribe(handleStatus);
+  } catch (error) {
+    close();
+    throw error;
+  }
+
+  return {
+    broadcast,
+    close,
+
+    isConnected() {
+      return connected && !closed;
+    },
+  };
+}
+
+// C:\Users\tydam\bootcamp\nx-msg\src\__tests__\typing.test.js
+
+// src/__tests__/typing.test.js
+
+/** @jest-environment node */
+
+import {
+  describe,
+  test,
+  expect,
+  jest,
+  beforeEach,
+  afterEach,
+} from "@jest/globals";
+
+/* -------------------- SUPABASE MOCKS -------------------- */
+
+const mockSetAuth = jest.fn();
+const mockChannel = jest.fn();
+const mockRemoveChannel = jest.fn();
+
+const mockOn = jest.fn();
+const mockSubscribe = jest.fn();
+const mockSend = jest.fn();
+
+const channel = {
+  on: mockOn,
+  subscribe: mockSubscribe,
+  send: mockSend,
+};
+
+const mockSupabase = {
+  realtime: {
+    setAuth: mockSetAuth,
+  },
+
+  channel: mockChannel,
+  removeChannel: mockRemoveChannel,
+};
+
+const mockCreateClient = jest.fn(
+  () => mockSupabase
+);
+
+jest.doMock("@/lib/supabase/client", () => ({
+  createClient: mockCreateClient,
+}));
+
+/* -------------------- LOAD SERVICE -------------------- */
+
+const { createTypingChannel } =
+  require("@/lib/extras/typing");
+
+/* -------------------- TEST DATA -------------------- */
+
+const USER_A =
+  "11111111-1111-4111-8111-111111111111";
+
+const USER_B =
+  "22222222-2222-4222-8222-222222222222";
+
+const USER_C =
+  "33333333-3333-4333-8333-333333333333";
+
+const CHAT_A =
+  "44444444-4444-4444-8444-444444444444";
+
+const CHAT_B =
+  "55555555-5555-4555-8555-555555555555";
+
+/* -------------------- CALLBACKS -------------------- */
+
+let broadcastHandler;
+let statusHandler;
+
+let mockOnTyping;
+let mockOnStatus;
+
+let activeChannels;
+let warnSpy;
+
+/* -------------------- HELPERS -------------------- */
+
+async function connect(overrides = {}) {
+  const connection = await createTypingChannel({
+    conversationId: CHAT_A,
+    userId: USER_A,
+    onTyping: mockOnTyping,
+    onStatus: mockOnStatus,
+    ...overrides,
+  });
+
+  activeChannels.push(connection);
+
+  return connection;
+}
+
+function emitStatus(status, error) {
+  statusHandler?.(status, error);
+}
+
+function emitTyping(payload) {
+  broadcastHandler?.({ payload });
+}
+
+async function flushPromises() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+/* -------------------- SETUP -------------------- */
+
+beforeEach(() => {
+  jest.resetAllMocks();
+
+  broadcastHandler = null;
+  statusHandler = null;
+
+  activeChannels = [];
+
+  mockOnTyping = jest.fn();
+  mockOnStatus = jest.fn();
+
+  mockCreateClient.mockReturnValue(mockSupabase);
+
+  mockSetAuth.mockResolvedValue(undefined);
+  mockChannel.mockReturnValue(channel);
+  mockRemoveChannel.mockResolvedValue("ok");
+  mockSend.mockResolvedValue("ok");
+
+  mockOn.mockImplementation(
+    (type, filter, callback) => {
+      broadcastHandler = callback;
+
+      return channel;
+    }
+  );
+
+  mockSubscribe.mockImplementation((callback) => {
+    statusHandler = callback;
+
+    return channel;
+  });
+
+  warnSpy = jest
+    .spyOn(console, "warn")
+    .mockImplementation(() => {});
+});
+
+afterEach(async () => {
+  for (const connection of activeChannels) {
+    connection.close();
+  }
+
+  await flushPromises();
+
+  warnSpy.mockRestore();
+});
+
+/* -------------------- CHANNEL CREATION -------------------- */
+
+describe("Channel creation", () => {
+  test("creates a typing channel", async () => {
+    const connection = await connect();
+
+    expect(connection.broadcast).toEqual(
+      expect.any(Function)
+    );
+
+    expect(connection.close).toEqual(
+      expect.any(Function)
+    );
+  });
+
+  test("authenticates Realtime before creating the channel", async () => {
+    await connect();
+
+    expect(mockSetAuth).toHaveBeenCalledTimes(1);
+
+    expect(
+      mockSetAuth.mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      mockChannel.mock.invocationCallOrder[0]
+    );
+  });
+
+  test("uses the correct conversation topic", async () => {
+    await connect();
+
+    expect(mockChannel).toHaveBeenCalledWith(
+      `typing:${CHAT_A}`,
+      expect.any(Object)
+    );
+  });
+
+  test("creates a private Realtime channel", async () => {
+    await connect();
+
+    expect(mockChannel).toHaveBeenCalledWith(
+      `typing:${CHAT_A}`,
+      {
+        config: {
+          private: true,
+
+          broadcast: {
+            self: false,
+            ack: false,
+          },
+        },
+      }
+    );
+  });
+
+  test("uses the requested conversation ID", async () => {
+    await connect({
+      conversationId: CHAT_B,
+    });
+
+    expect(mockChannel).toHaveBeenCalledWith(
+      `typing:${CHAT_B}`,
+      expect.any(Object)
+    );
+  });
+
+  test("registers the typing broadcast listener", async () => {
+    await connect();
+
+    expect(mockOn).toHaveBeenCalledWith(
+      "broadcast",
+      {
+        event: "typing",
+      },
+      expect.any(Function)
+    );
+  });
+
+  test("subscribes to the channel", async () => {
+    await connect();
+
+    expect(mockSubscribe).toHaveBeenCalledWith(
+      expect.any(Function)
+    );
+  });
+});
+
+/* -------------------- VALIDATION -------------------- */
+
+describe("Channel validation", () => {
+  test("rejects a missing conversation ID", async () => {
+    await expect(
+      connect({
+        conversationId: null,
+      })
+    ).rejects.toThrow();
+
+    expect(mockChannel).not.toHaveBeenCalled();
+  });
+
+  test("rejects a missing user ID", async () => {
+    await expect(
+      connect({
+        userId: null,
+      })
+    ).rejects.toThrow();
+
+    expect(mockChannel).not.toHaveBeenCalled();
+  });
+
+  test("rejects an empty conversation ID", async () => {
+    await expect(
+      connect({
+        conversationId: "",
+      })
+    ).rejects.toThrow();
+
+    expect(mockChannel).not.toHaveBeenCalled();
+  });
+
+  test("rejects an empty user ID", async () => {
+    await expect(
+      connect({
+        userId: "",
+      })
+    ).rejects.toThrow();
+
+    expect(mockChannel).not.toHaveBeenCalled();
+  });
+
+  test("does not create a channel when authentication fails", async () => {
+    mockSetAuth.mockRejectedValue(
+      new Error("Authentication failed")
+    );
+
+    await expect(connect()).rejects.toThrow(
+      "Authentication failed"
+    );
+
+    expect(mockChannel).not.toHaveBeenCalled();
+  });
+});
+
+/* -------------------- CONNECTION STATUS -------------------- */
+
+describe("Connection status", () => {
+  test("reports a successful connection", async () => {
+    await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    expect(mockOnStatus).toHaveBeenCalledWith(
+      true
+    );
+  });
+
+  test("reports a disconnected channel", async () => {
+    await connect();
+
+    emitStatus("SUBSCRIBED");
+    emitStatus("CLOSED");
+
+    expect(mockOnStatus).toHaveBeenLastCalledWith(
+      false
+    );
+  });
+
+  test("reports a channel error", async () => {
+    await connect();
+
+    emitStatus(
+      "CHANNEL_ERROR",
+      new Error("Connection failed")
+    );
+
+    expect(mockOnStatus).toHaveBeenCalledWith(
+      false
+    );
+
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  test("reports a connection timeout", async () => {
+    await connect();
+
+    emitStatus("TIMED_OUT");
+
+    expect(mockOnStatus).toHaveBeenCalledWith(
+      false
+    );
+
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  test("supports reconnecting after disconnection", async () => {
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+    emitStatus("CLOSED");
+    emitStatus("SUBSCRIBED");
+
+    connection.broadcast(true);
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+
+    expect(mockOnStatus).toHaveBeenLastCalledWith(
+      true
+    );
+  });
+});
+
+/* -------------------- OUTGOING EVENTS -------------------- */
+
+describe("Outgoing typing events", () => {
+  test("broadcasts a typing event", async () => {
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    connection.broadcast(true);
+
+    expect(mockSend).toHaveBeenCalledWith({
+      type: "broadcast",
+      event: "typing",
+
+      payload: {
+        userId: USER_A,
+        typing: true,
+      },
+    });
+  });
+
+  test("broadcasts a stopped typing event", async () => {
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    connection.broadcast(false);
+
+    expect(mockSend).toHaveBeenCalledWith({
+      type: "broadcast",
+      event: "typing",
+
+      payload: {
+        userId: USER_A,
+        typing: false,
+      },
+    });
+  });
+
+  test("does not broadcast before subscription completes", async () => {
+    const connection = await connect();
+
+    connection.broadcast(true);
+
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  test("does not broadcast after disconnection", async () => {
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+    emitStatus("CLOSED");
+
+    connection.broadcast(true);
+
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  test("does not broadcast after a channel error", async () => {
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+    emitStatus("CHANNEL_ERROR");
+
+    connection.broadcast(true);
+
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  test("does not broadcast after a timeout", async () => {
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+    emitStatus("TIMED_OUT");
+
+    connection.broadcast(true);
+
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    null,
+    undefined,
+    0,
+    1,
+    "true",
+    "false",
+    {},
+    [],
+  ])("rejects invalid typing value: %p", async (value) => {
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    connection.broadcast(value);
+
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  test("uses the authenticated user's supplied ID", async () => {
+    const connection = await connect({
+      userId: USER_C,
+    });
+
+    emitStatus("SUBSCRIBED");
+
+    connection.broadcast(true);
+
+    expect(mockSend).toHaveBeenCalledWith({
+      type: "broadcast",
+      event: "typing",
+
+      payload: {
+        userId: USER_C,
+        typing: true,
+      },
+    });
+  });
+});
+
+/* -------------------- INCOMING EVENTS -------------------- */
+
+describe("Incoming typing events", () => {
+  test("receives a valid typing event", async () => {
+    await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    emitTyping({
+      userId: USER_B,
+      typing: true,
+    });
+
+    expect(mockOnTyping).toHaveBeenCalledWith({
+      userId: USER_B,
+      typing: true,
+    });
+  });
+
+  test("receives a stopped typing event", async () => {
+    await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    emitTyping({
+      userId: USER_B,
+      typing: false,
+    });
+
+    expect(mockOnTyping).toHaveBeenCalledWith({
+      userId: USER_B,
+      typing: false,
+    });
+  });
+
+  test("receives typing events from multiple users", async () => {
+    await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    emitTyping({
+      userId: USER_B,
+      typing: true,
+    });
+
+    emitTyping({
+      userId: USER_C,
+      typing: true,
+    });
+
+    expect(mockOnTyping).toHaveBeenCalledTimes(2);
+
+    expect(mockOnTyping).toHaveBeenNthCalledWith(
+      1,
+      {
+        userId: USER_B,
+        typing: true,
+      }
+    );
+
+    expect(mockOnTyping).toHaveBeenNthCalledWith(
+      2,
+      {
+        userId: USER_C,
+        typing: true,
+      }
+    );
+  });
+
+  test("ignores events from the current user", async () => {
+    await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    emitTyping({
+      userId: USER_A,
+      typing: true,
+    });
+
+    expect(mockOnTyping).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    null,
+    undefined,
+    {},
+    [],
+    "invalid",
+    123,
+
+    {
+      userId: "invalid",
+      typing: true,
+    },
+
+    {
+      userId: USER_B,
+    },
+
+    {
+      typing: true,
+    },
+
+    {
+      userId: USER_B,
+      typing: "true",
+    },
+
+    {
+      userId: USER_B,
+      typing: 1,
+    },
+
+    {
+      userId: USER_B,
+      typing: null,
+    },
+
+    {
+      userId: null,
+      typing: true,
+    },
+  ])("ignores malformed payload: %p", async (payload) => {
+    await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    emitTyping(payload);
+
+    expect(mockOnTyping).not.toHaveBeenCalled();
+  });
+
+  test("removes unrelated payload properties", async () => {
+    await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    emitTyping({
+      userId: USER_B,
+      typing: true,
+      username: "unexpected",
+      admin: true,
+    });
+
+    expect(mockOnTyping).toHaveBeenCalledWith({
+      userId: USER_B,
+      typing: true,
+    });
+  });
+
+  test("supports an omitted typing callback", async () => {
+    await connect({
+      onTyping: undefined,
+    });
+
+    expect(() => {
+      emitTyping({
+        userId: USER_B,
+        typing: true,
+      });
+    }).not.toThrow();
+  });
+
+  test("supports an omitted status callback", async () => {
+    await connect({
+      onStatus: undefined,
+    });
+
+    expect(() => {
+      emitStatus("SUBSCRIBED");
+    }).not.toThrow();
+  });
+});
+
+/* -------------------- BROADCAST ERRORS -------------------- */
+
+describe("Broadcast error handling", () => {
+  test("handles rejected broadcast requests", async () => {
+    mockSend.mockRejectedValue(
+      new Error("Network error")
+    );
+
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    expect(() => {
+      connection.broadcast(true);
+    }).not.toThrow();
+
+    await flushPromises();
+
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  test("handles unsuccessful broadcast responses", async () => {
+    mockSend.mockResolvedValue("error");
+
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    connection.broadcast(true);
+
+    await flushPromises();
+
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  test("handles broadcast timeouts", async () => {
+    mockSend.mockResolvedValue("timed out");
+
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    connection.broadcast(true);
+
+    await flushPromises();
+
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  test("does not warn after successful broadcasts", async () => {
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    connection.broadcast(true);
+
+    await flushPromises();
+
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
+/* -------------------- CLEANUP -------------------- */
+
+describe("Channel cleanup", () => {
+  test("removes the Realtime channel", async () => {
+    const connection = await connect();
+
+    connection.close();
+
+    expect(mockRemoveChannel).toHaveBeenCalledWith(
+      channel
+    );
+  });
+
+  test("broadcasts stopped typing before closing", async () => {
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    connection.close();
+
+    expect(mockSend).toHaveBeenCalledWith({
+      type: "broadcast",
+      event: "typing",
+
+      payload: {
+        userId: USER_A,
+        typing: false,
+      },
+    });
+
+    expect(
+      mockSend.mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      mockRemoveChannel.mock.invocationCallOrder[0]
+    );
+  });
+
+  test("does not broadcast when closing an unconnected channel", async () => {
+    const connection = await connect();
+
+    connection.close();
+
+    expect(mockSend).not.toHaveBeenCalled();
+
+    expect(mockRemoveChannel).toHaveBeenCalledTimes(
+      1
+    );
+  });
+
+  test("supports repeated cleanup calls", async () => {
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    connection.close();
+    connection.close();
+    connection.close();
+
+    expect(mockRemoveChannel).toHaveBeenCalledTimes(
+      1
+    );
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  test("ignores outgoing broadcasts after cleanup", async () => {
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    connection.close();
+
+    mockSend.mockClear();
+
+    connection.broadcast(true);
+    connection.broadcast(false);
+
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  test("ignores incoming broadcasts after cleanup", async () => {
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    connection.close();
+
+    emitTyping({
+      userId: USER_B,
+      typing: true,
+    });
+
+    expect(mockOnTyping).not.toHaveBeenCalled();
+  });
+
+  test("ignores status changes after cleanup", async () => {
+    const connection = await connect();
+
+    connection.close();
+
+    mockOnStatus.mockClear();
+
+    emitStatus("SUBSCRIBED");
+    emitStatus("CHANNEL_ERROR");
+    emitStatus("CLOSED");
+
+    expect(mockOnStatus).not.toHaveBeenCalled();
+  });
+
+  test("cannot reconnect a closed connection", async () => {
+    const connection = await connect();
+
+    connection.close();
+
+    emitStatus("SUBSCRIBED");
+
+    connection.broadcast(true);
+
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+});
+
+// C:\Users\tydam\bootcamp\nx-msg\src\__tests__\useTypingIndicator.test.js
+
+// src/__tests__/useTypingIndicator.test.js
+
+/** @jest-environment jsdom */
+
+import {
+    describe,
+    test,
+    expect,
+    jest,
+    beforeEach,
+    afterEach,
+} from "@jest/globals";
+
+import {
+    renderHook,
+    act,
+    cleanup,
+} from "@testing-library/react";
+
+/* -------------------- MOCK TYPING SERVICE -------------------- */
+
+const mockCreateTypingChannel = jest.fn();
+
+jest.doMock("@/lib/extras/typing", () => ({
+    createTypingChannel: mockCreateTypingChannel,
+}));
+
+const useTypingIndicator = require("@/hooks/useTypingIndicator").default;
+
+/* -------------------- CONSTANTS -------------------- */
+
+const USER_A = "11111111-1111-4111-8111-111111111111";
+const USER_B = "22222222-2222-4222-8222-222222222222";
+const USER_C = "33333333-3333-4333-8333-333333333333";
+const CHAT_A = "44444444-4444-4444-8444-444444444444";
+const CHAT_B = "55555555-5555-4555-8555-555555555555";
+
+const BROADCAST_INTERVAL = 1000;
+const INACTIVITY_TIMEOUT = 2000;
+const REMOTE_TIMEOUT = 5000;
+
+/* -------------------- MOCK CONNECTIONS -------------------- */
+
+let connections;
+let warnSpy;
+let errorSpy;
+
+function createMockConnection(options) {
+    const connection = {
+        options,
+        broadcast: jest.fn(),
+        close: jest.fn(),
+    };
+
+    connections.push(connection);
+
+    return connection;
+}
+
+function currentConnection() {
+    return connections[connections.length - 1];
+}
+
+/* -------------------- HELPERS -------------------- */
+
+async function flushPromises() {
+    await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+    });
+}
+
+async function advanceTime(milliseconds) {
+    await act(async () => {
+        jest.advanceTimersByTime(milliseconds);
+    });
+}
+
+async function setup(overrides = {}) {
+    const initialProps = {
+        conversationId: CHAT_A,
+        userId: USER_A,
+        enabled: true,
+        ...overrides,
+    };
+
+    const hook = renderHook(
+        ({ conversationId, userId, enabled }) =>
+            useTypingIndicator(
+                conversationId,
+                userId,
+                { enabled }
+            ),
+        {
+            initialProps,
+        }
+    );
+
+    await flushPromises();
+
+    return hook;
+}
+
+function connectChannel(
+    connection = currentConnection()
+) {
+    act(() => {
+        connection?.options.onStatus?.(true);
+    });
+}
+
+function disconnectChannel(
+    connection = currentConnection()
+) {
+    act(() => {
+        connection?.options.onStatus?.(false);
+    });
+}
+
+function receiveTyping(
+    userId,
+    typing,
+    connection = currentConnection()
+) {
+    act(() => {
+        connection?.options.onTyping?.({
+            userId,
+            typing,
+        });
+    });
+}
+
+function deferred() {
+    let resolve;
+    let reject;
+
+    const promise = new Promise((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+
+    return {
+        promise,
+        resolve,
+        reject,
+    };
+}
+
+/* -------------------- SETUP -------------------- */
+
+beforeEach(() => {
+    jest.useFakeTimers();
+
+    jest.setSystemTime(
+        new Date("2026-11-26T00:00:00Z")
+    );
+
+    jest.clearAllMocks();
+
+    connections = [];
+
+    mockCreateTypingChannel.mockReset();
+
+    mockCreateTypingChannel.mockImplementation(
+        async (options) => createMockConnection(options)
+    );
+
+    warnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => { });
+
+    errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => { });
+});
+
+afterEach(() => {
+    cleanup();
+
+    jest.clearAllTimers();
+    jest.useRealTimers();
+
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+});
+
+/* -------------------- INITIALIZATION -------------------- */
+
+describe("Initialization", () => {
+    test("starts without remote typing users", async () => {
+        const { result } = await setup();
+
+        expect(result.current.typingUsers).toEqual([]);
+    });
+
+    test("exposes typing controls", async () => {
+        const { result } = await setup();
+
+        expect(result.current.notifyTyping).toEqual(
+            expect.any(Function)
+        );
+
+        expect(result.current.stopTyping).toEqual(
+            expect.any(Function)
+        );
+    });
+
+    test("creates a channel for the active conversation", async () => {
+        await setup();
+
+        expect(
+            mockCreateTypingChannel
+        ).toHaveBeenCalledTimes(1);
+
+        expect(
+            mockCreateTypingChannel
+        ).toHaveBeenCalledWith(
+            expect.objectContaining({
+                conversationId: CHAT_A,
+                userId: USER_A,
+            })
+        );
+    });
+
+    test("registers typing and status callbacks", async () => {
+        await setup();
+
+        expect(
+            mockCreateTypingChannel
+        ).toHaveBeenCalledWith(
+            expect.objectContaining({
+                onTyping: expect.any(Function),
+                onStatus: expect.any(Function),
+            })
+        );
+    });
+
+    test("does not connect without a conversation", async () => {
+        await setup({
+            conversationId: null,
+        });
+
+        expect(
+            mockCreateTypingChannel
+        ).not.toHaveBeenCalled();
+    });
+
+    test("does not connect without a user", async () => {
+        await setup({
+            userId: null,
+        });
+
+        expect(
+            mockCreateTypingChannel
+        ).not.toHaveBeenCalled();
+    });
+});
+
+/* -------------------- BLOCKED CONVERSATIONS -------------------- */
+
+describe("Blocked conversation restrictions", () => {
+    test("does not connect when typing is disabled", async () => {
+        await setup({
+            enabled: false,
+        });
+
+        expect(
+            mockCreateTypingChannel
+        ).not.toHaveBeenCalled();
+    });
+
+    test("does not broadcast when typing is disabled", async () => {
+        const { result } = await setup({
+            enabled: false,
+        });
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+        });
+
+        expect(
+            mockCreateTypingChannel
+        ).not.toHaveBeenCalled();
+
+        expect(result.current.typingUsers).toEqual([]);
+    });
+
+    test("closes the channel when messaging becomes unavailable", async () => {
+        const { rerender } = await setup();
+
+        const connection = currentConnection();
+
+        connectChannel(connection);
+
+        rerender({
+            conversationId: CHAT_A,
+            userId: USER_A,
+            enabled: false,
+        });
+
+        await flushPromises();
+
+        expect(connection.close).toHaveBeenCalledTimes(1);
+    });
+
+    test("clears remote typing indicators when disabled", async () => {
+        const { result, rerender } = await setup();
+
+        connectChannel();
+
+        receiveTyping(USER_B, true);
+
+        expect(result.current.typingUsers).toContain(
+            USER_B
+        );
+
+        rerender({
+            conversationId: CHAT_A,
+            userId: USER_A,
+            enabled: false,
+        });
+
+        await flushPromises();
+
+        expect(result.current.typingUsers).toEqual([]);
+    });
+
+    test("reconnects when messaging becomes available", async () => {
+        const { rerender } = await setup({
+            enabled: false,
+        });
+
+        rerender({
+            conversationId: CHAT_A,
+            userId: USER_A,
+            enabled: true,
+        });
+
+        await flushPromises();
+
+        expect(
+            mockCreateTypingChannel
+        ).toHaveBeenCalledTimes(1);
+    });
+
+    test("ignores events from a disabled channel", async () => {
+        const { result, rerender } = await setup();
+
+        const oldConnection = currentConnection();
+
+        rerender({
+            conversationId: CHAT_A,
+            userId: USER_A,
+            enabled: false,
+        });
+
+        await flushPromises();
+
+        receiveTyping(
+            USER_B,
+            true,
+            oldConnection
+        );
+
+        expect(result.current.typingUsers).toEqual([]);
+    });
+});
+
+/* -------------------- LOCAL TYPING -------------------- */
+
+describe("Local typing", () => {
+    test("broadcasts typing when text is entered", async () => {
+        const { result } = await setup();
+
+        const connection = currentConnection();
+
+        connectChannel();
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+        });
+
+        expect(connection.broadcast).toHaveBeenCalledWith(
+            true
+        );
+    });
+
+    test("does not broadcast typing for empty text", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        act(() => {
+            result.current.notifyTyping("");
+        });
+
+        expect(
+            currentConnection().broadcast
+        ).not.toHaveBeenCalledWith(true);
+    });
+
+    test("does not broadcast typing for whitespace", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        act(() => {
+            result.current.notifyTyping("   ");
+        });
+
+        expect(
+            currentConnection().broadcast
+        ).not.toHaveBeenCalledWith(true);
+    });
+
+    test.each([
+        null,
+        undefined,
+        123,
+        true,
+        {},
+        [],
+    ])("ignores invalid text input: %p", async (value) => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        expect(() => {
+            act(() => {
+                result.current.notifyTyping(value);
+            });
+        }).not.toThrow();
+
+        expect(
+            currentConnection().broadcast
+        ).not.toHaveBeenCalledWith(true);
+    });
+
+    test("stops typing when the input is cleared", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+            result.current.notifyTyping("");
+        });
+
+        expect(
+            currentConnection().broadcast
+        ).toHaveBeenLastCalledWith(false);
+    });
+
+    test("supports manually stopping typing", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+            result.current.stopTyping();
+        });
+
+        expect(
+            currentConnection().broadcast
+        ).toHaveBeenLastCalledWith(false);
+    });
+
+    test("does not repeatedly broadcast stopped typing", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        const connection = currentConnection();
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+            result.current.stopTyping();
+            result.current.stopTyping();
+            result.current.stopTyping();
+        });
+
+        const stoppedEvents =
+            connection.broadcast.mock.calls.filter(
+                ([typing]) => typing === false
+            );
+
+        expect(stoppedEvents).toHaveLength(1);
+    });
+});
+
+/* -------------------- BROADCAST THROTTLING -------------------- */
+
+describe("Broadcast throttling", () => {
+    test("does not broadcast on every keystroke", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        const connection = currentConnection();
+
+        act(() => {
+            result.current.notifyTyping("H");
+            result.current.notifyTyping("He");
+            result.current.notifyTyping("Hel");
+            result.current.notifyTyping("Hell");
+            result.current.notifyTyping("Hello");
+        });
+
+        const typingEvents =
+            connection.broadcast.mock.calls.filter(
+                ([typing]) => typing === true
+            );
+
+        expect(typingEvents).toHaveLength(1);
+    });
+
+    test("throttles broadcasts within the interval", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        const connection = currentConnection();
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+        });
+
+        await advanceTime(
+            BROADCAST_INTERVAL - 1
+        );
+
+        act(() => {
+            result.current.notifyTyping("Hello again");
+        });
+
+        expect(connection.broadcast).toHaveBeenCalledTimes(
+            1
+        );
+    });
+
+    test("allows another broadcast after the interval", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        const connection = currentConnection();
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+        });
+
+        await advanceTime(BROADCAST_INTERVAL + 1);
+
+        act(() => {
+            result.current.notifyTyping("Hello again");
+        });
+
+        const typingEvents =
+            connection.broadcast.mock.calls.filter(
+                ([typing]) => typing === true
+            );
+
+        expect(typingEvents).toHaveLength(2);
+    });
+
+    test("does not continuously broadcast without input", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        const connection = currentConnection();
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+        });
+
+        await advanceTime(10_000);
+
+        const typingEvents =
+            connection.broadcast.mock.calls.filter(
+                ([typing]) => typing === true
+            );
+
+        expect(typingEvents).toHaveLength(1);
+    });
+});
+
+/* -------------------- INACTIVITY TIMEOUT -------------------- */
+
+describe("Local inactivity timeout", () => {
+    test("does not stop typing prematurely", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+        });
+
+        await advanceTime(
+            INACTIVITY_TIMEOUT - 1
+        );
+
+        expect(
+            currentConnection().broadcast
+        ).not.toHaveBeenCalledWith(false);
+    });
+
+    test("stops typing after inactivity", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+        });
+
+        await advanceTime(INACTIVITY_TIMEOUT);
+
+        expect(
+            currentConnection().broadcast
+        ).toHaveBeenLastCalledWith(false);
+    });
+
+    test("resets the inactivity timer on new input", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+        });
+
+        await advanceTime(1500);
+
+        act(() => {
+            result.current.notifyTyping("Hello again");
+        });
+
+        await advanceTime(500);
+
+        expect(
+            currentConnection().broadcast
+        ).not.toHaveBeenCalledWith(false);
+
+        await advanceTime(1500);
+
+        expect(
+            currentConnection().broadcast
+        ).toHaveBeenLastCalledWith(false);
+    });
+
+    test("clears the inactivity timer when manually stopped", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        const connection = currentConnection();
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+            result.current.stopTyping();
+        });
+
+        connection.broadcast.mockClear();
+
+        await advanceTime(
+            INACTIVITY_TIMEOUT * 2
+        );
+
+        expect(connection.broadcast).not.toHaveBeenCalled();
+    });
+});
+
+/* -------------------- REMOTE TYPING -------------------- */
+
+describe("Remote typing indicators", () => {
+    test("displays a remote typing user", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        receiveTyping(USER_B, true);
+
+        expect(result.current.typingUsers).toEqual([
+            USER_B,
+        ]);
+    });
+
+    test("removes a user when typing stops", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        receiveTyping(USER_B, true);
+        receiveTyping(USER_B, false);
+
+        expect(result.current.typingUsers).toEqual([]);
+    });
+
+    test("supports multiple remote typing users", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        receiveTyping(USER_B, true);
+        receiveTyping(USER_C, true);
+
+        expect(result.current.typingUsers).toEqual(
+            expect.arrayContaining([
+                USER_B,
+                USER_C,
+            ])
+        );
+
+        expect(result.current.typingUsers).toHaveLength(2);
+    });
+
+    test("does not duplicate remote typing users", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        receiveTyping(USER_B, true);
+        receiveTyping(USER_B, true);
+        receiveTyping(USER_B, true);
+
+        expect(result.current.typingUsers).toEqual([
+            USER_B,
+        ]);
+    });
+
+    test("removes only the user who stopped typing", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        receiveTyping(USER_B, true);
+        receiveTyping(USER_C, true);
+        receiveTyping(USER_B, false);
+
+        expect(result.current.typingUsers).toEqual([
+            USER_C,
+        ]);
+    });
+
+    test("handles stopped typing from an unknown user", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        receiveTyping(USER_B, false);
+
+        expect(result.current.typingUsers).toEqual([]);
+    });
+});
+
+/* -------------------- REMOTE EXPIRATION -------------------- */
+
+describe("Remote typing expiration", () => {
+    test("expires stale remote typing indicators", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        receiveTyping(USER_B, true);
+
+        await advanceTime(REMOTE_TIMEOUT);
+
+        expect(result.current.typingUsers).toEqual([]);
+    });
+
+    test("does not expire a user prematurely", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        receiveTyping(USER_B, true);
+
+        await advanceTime(REMOTE_TIMEOUT - 1);
+
+        expect(result.current.typingUsers).toContain(
+            USER_B
+        );
+    });
+
+    test("refreshes expiration when another event arrives", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        receiveTyping(USER_B, true);
+
+        await advanceTime(4000);
+
+        receiveTyping(USER_B, true);
+
+        await advanceTime(1000);
+
+        expect(result.current.typingUsers).toContain(
+            USER_B
+        );
+
+        await advanceTime(4000);
+
+        expect(result.current.typingUsers).toEqual([]);
+    });
+
+    test("maintains independent expiration timers", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        receiveTyping(USER_B, true);
+
+        await advanceTime(2000);
+
+        receiveTyping(USER_C, true);
+
+        await advanceTime(3000);
+
+        expect(result.current.typingUsers).toEqual([
+            USER_C,
+        ]);
+
+        await advanceTime(2000);
+
+        expect(result.current.typingUsers).toEqual([]);
+    });
+
+    test("cancels expiration when a user stops typing", async () => {
+        const { result } = await setup();
+
+        connectChannel();
+
+        receiveTyping(USER_B, true);
+        receiveTyping(USER_B, false);
+
+        await advanceTime(REMOTE_TIMEOUT * 2);
+
+        expect(result.current.typingUsers).toEqual([]);
+    });
+});
+
+/* -------------------- CONVERSATION SWITCHING -------------------- */
+
+describe("Conversation switching", () => {
+    test("closes the previous conversation channel", async () => {
+        const { rerender } = await setup();
+
+        const previous = currentConnection();
+
+        rerender({
+            conversationId: CHAT_B,
+            userId: USER_A,
+            enabled: true,
+        });
+
+        await flushPromises();
+
+        expect(previous.close).toHaveBeenCalledTimes(1);
+    });
+
+    test("connects to the new conversation", async () => {
+        const { rerender } = await setup();
+
+        rerender({
+            conversationId: CHAT_B,
+            userId: USER_A,
+            enabled: true,
+        });
+
+        await flushPromises();
+
+        expect(
+            mockCreateTypingChannel
+        ).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                conversationId: CHAT_B,
+                userId: USER_A,
+            })
+        );
+    });
+
+    test("clears typing indicators when switching conversations", async () => {
+        const { result, rerender } = await setup();
+
+        connectChannel();
+
+        receiveTyping(USER_B, true);
+
+        rerender({
+            conversationId: CHAT_B,
+            userId: USER_A,
+            enabled: true,
+        });
+
+        await flushPromises();
+
+        expect(result.current.typingUsers).toEqual([]);
+    });
+
+    test("ignores late events from the previous conversation", async () => {
+        const { result, rerender } = await setup();
+
+        const previous = currentConnection();
+
+        rerender({
+            conversationId: CHAT_B,
+            userId: USER_A,
+            enabled: true,
+        });
+
+        await flushPromises();
+
+        receiveTyping(
+            USER_B,
+            true,
+            previous
+        );
+
+        expect(result.current.typingUsers).toEqual([]);
+    });
+
+    test("does not recreate channels for unchanged props", async () => {
+        const { rerender } = await setup();
+
+        rerender({
+            conversationId: CHAT_A,
+            userId: USER_A,
+            enabled: true,
+        });
+
+        await flushPromises();
+
+        expect(
+            mockCreateTypingChannel
+        ).toHaveBeenCalledTimes(1);
+    });
+});
+
+/* -------------------- ACCOUNT SWITCHING -------------------- */
+
+describe("Account switching", () => {
+    test("closes the previous user's channel", async () => {
+        const { rerender } = await setup();
+
+        const previous = currentConnection();
+
+        rerender({
+            conversationId: CHAT_A,
+            userId: USER_B,
+            enabled: true,
+        });
+
+        await flushPromises();
+
+        expect(previous.close).toHaveBeenCalledTimes(1);
+
+        expect(
+            mockCreateTypingChannel
+        ).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                userId: USER_B,
+            })
+        );
+    });
+
+    test("clears previous account typing indicators", async () => {
+        const { result, rerender } = await setup();
+
+        connectChannel();
+
+        receiveTyping(USER_C, true);
+
+        rerender({
+            conversationId: CHAT_A,
+            userId: USER_B,
+            enabled: true,
+        });
+
+        await flushPromises();
+
+        expect(result.current.typingUsers).toEqual([]);
+    });
+
+    test("closes the channel on logout", async () => {
+        const { result, rerender } = await setup();
+
+        const connection = currentConnection();
+
+        rerender({
+            conversationId: CHAT_A,
+            userId: null,
+            enabled: true,
+        });
+
+        await flushPromises();
+
+        expect(connection.close).toHaveBeenCalledTimes(1);
+        expect(result.current.typingUsers).toEqual([]);
+    });
+});
+
+/* -------------------- RECONNECTION -------------------- */
+
+describe("Connection status", () => {
+    test("handles disconnected status without throwing", async () => {
+        await setup();
+
+        connectChannel();
+
+        expect(() => {
+            disconnectChannel();
+        }).not.toThrow();
+    });
+
+    test("resumes typing after reconnection when still active", async () => {
+        const { result } = await setup();
+
+        const connection = currentConnection();
+
+        connectChannel();
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+        });
+
+        disconnectChannel();
+
+        connection.broadcast.mockClear();
+
+        connectChannel();
+
+        expect(connection.broadcast).toHaveBeenCalledWith(
+            true
+        );
+    });
+
+    test("does not resume typing after inactivity", async () => {
+        const { result } = await setup();
+
+        const connection = currentConnection();
+
+        connectChannel();
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+        });
+
+        disconnectChannel();
+
+        await advanceTime(INACTIVITY_TIMEOUT);
+
+        connection.broadcast.mockClear();
+
+        connectChannel();
+
+        expect(
+            connection.broadcast
+        ).not.toHaveBeenCalledWith(true);
+    });
+});
+
+/* -------------------- ASYNCHRONOUS RACES -------------------- */
+
+describe("Asynchronous channel creation", () => {
+    test("closes a channel that resolves after unmounting", async () => {
+        const request = deferred();
+
+        mockCreateTypingChannel.mockReturnValueOnce(
+            request.promise
+        );
+
+        const { unmount } = await setup();
+
+        unmount();
+
+        const connection = {
+            broadcast: jest.fn(),
+            close: jest.fn(),
+        };
+
+        await act(async () => {
+            request.resolve(connection);
+            await request.promise;
+        });
+
+        expect(connection.close).toHaveBeenCalledTimes(1);
+    });
+
+    test("closes a channel that resolves after disabling typing", async () => {
+        const request = deferred();
+
+        mockCreateTypingChannel.mockReturnValueOnce(
+            request.promise
+        );
+
+        const { rerender } = await setup();
+
+        rerender({
+            conversationId: CHAT_A,
+            userId: USER_A,
+            enabled: false,
+        });
+
+        const connection = {
+            broadcast: jest.fn(),
+            close: jest.fn(),
+        };
+
+        await act(async () => {
+            request.resolve(connection);
+            await request.promise;
+        });
+
+        expect(connection.close).toHaveBeenCalledTimes(1);
+    });
+
+    test("handles failed channel creation", async () => {
+        mockCreateTypingChannel.mockRejectedValueOnce(
+            new Error("Connection failed")
+        );
+
+        const { result } = await setup();
+
+        expect(result.current.typingUsers).toEqual([]);
+
+        expect(() => {
+            act(() => {
+                result.current.notifyTyping("Hello");
+            });
+        }).not.toThrow();
+    });
+});
+
+/* -------------------- CLEANUP -------------------- */
+
+describe("Hook cleanup", () => {
+    test("closes the channel on unmount", async () => {
+        const { unmount } = await setup();
+
+        const connection = currentConnection();
+
+        unmount();
+
+        expect(connection.close).toHaveBeenCalledTimes(1);
+    });
+
+    test("stops local typing before unmounting", async () => {
+        const { result, unmount } = await setup();
+
+        const connection = currentConnection();
+
+        connectChannel();
+
+        act(() => {
+            result.current.notifyTyping("Hello");
+        });
+
+        unmount();
+
+        expect(connection.broadcast).toHaveBeenCalledWith(
+            false
+        );
+    });
+
+test("clears pending typing timers", async () => {
+  const { result, unmount } = await setup();
+
+  connectChannel();
+
+  const connection = currentConnection();
+
+  const setTimeoutSpy = jest.spyOn(
+    globalThis,
+    "setTimeout"
+  );
+
+  const clearTimeoutSpy = jest.spyOn(
+    globalThis,
+    "clearTimeout"
+  );
+
+  try {
+    act(() => {
+      result.current.notifyTyping("Hello");
+    });
+
+    receiveTyping(USER_B, true);
+    receiveTyping(USER_C, true);
+
+    // Capture only timers associated with typing.
+    const typingTimers = setTimeoutSpy.mock.calls
+      .map((args, index) => ({
+        delay: args[1],
+        handle: setTimeoutSpy.mock.results[index].value,
+      }))
+      .filter(
+        ({ delay }) =>
+          delay === INACTIVITY_TIMEOUT ||
+          delay === REMOTE_TIMEOUT
+      );
+
+    // One local timer and two remote timers.
+    expect(typingTimers).toHaveLength(3);
+
+    expect(
+      typingTimers.filter(
+        ({ delay }) => delay === INACTIVITY_TIMEOUT
+      )
+    ).toHaveLength(1);
+
+    expect(typingTimers.filter(({ delay }) => delay === REMOTE_TIMEOUT)).toHaveLength(2);
+
+    clearTimeoutSpy.mockClear();
+
+    unmount();
+
+    // Verify every typing timer was explicitly cleared.
+    for (const { handle } of typingTimers) {
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(handle);
+    }
+
+    expect(connection.close).toHaveBeenCalledTimes(1);
+
+    connection.broadcast.mockClear();
+
+    await advanceTime(REMOTE_TIMEOUT * 2);
+
+    // No delayed broadcasts after unmounting.
+    expect(connection.broadcast).not.toHaveBeenCalled();
+
+  } finally {
+    setTimeoutSpy.mockRestore();
+    clearTimeoutSpy.mockRestore();
+  }
+});
+
+    test("ignores late callbacks after unmounting", async () => {
+        const { unmount } = await setup();
+        const connection = currentConnection();
+
+        unmount();
+
+        expect(() => {
+            receiveTyping(
+                USER_B,
+                true,
+                connection
+            );
+
+            connectChannel(connection);
+        }).not.toThrow();
+    });
+});

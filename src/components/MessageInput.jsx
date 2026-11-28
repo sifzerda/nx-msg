@@ -6,7 +6,9 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -18,11 +20,17 @@ import {
   Paperclip,
   LoaderCircle,
   Smile,
+  AtSign,
 } from "lucide-react";
 
 import useChatStore from "@/store/useChatStore";
 
-import { insertEmoji } from "@/utils/messageUtils";
+import {
+  insertEmoji,
+  getMentionQuery,
+  getMentionSuggestions,
+  insertMention,
+} from "@/utils/messageUtils";
 import { isImageFile, normalizeFile } from "@/utils/fileUtils";
 import { FILE_ACCEPT } from "@/constants/attachments";
 
@@ -98,16 +106,104 @@ function PickerButton({
       title={label}
       aria-label={label}
       aria-expanded={expanded}
-      className={`flex shrink-0 items-center justify-center rounded-xl p-2 transition-colors disabled:opacity-50 sm:p-2.5 ${
-        active
-          ? "bg-blue-600/20 text-blue-400"
-          : "text-gray-400 hover:bg-gray-800 hover:text-blue-400"
-      }`}
+      className={`flex shrink-0 items-center justify-center rounded-xl p-2 transition-colors disabled:opacity-50 sm:p-2.5 ${active
+        ? "bg-blue-600/20 text-blue-400"
+        : "text-gray-400 hover:bg-gray-800 hover:text-blue-400"
+        }`}
     >
       {children}
     </button>
   );
 }
+
+/* -------------------- MENTION SUGGESTIONS -------------------- */
+
+const EMPTY_MEMBERS = Object.freeze([]);
+
+const MentionSuggestions = memo(
+  function MentionSuggestions({
+    id,
+    suggestions,
+    activeIndex,
+    onSelect,
+    onHighlight,
+  }) {
+    if (!suggestions.length) {
+      return null;
+    }
+
+    return (
+      <div className="mx-2 overflow-hidden rounded-xl border border-gray-700 bg-gray-900 shadow-xl sm:mx-4">
+        <div className="flex items-center gap-2 border-b border-gray-800 px-3 py-2 text-xs font-medium text-gray-400">
+          <AtSign size={14} />
+          Mention a member
+        </div>
+
+        <div
+          id={id}
+          role="listbox"
+          aria-label="Mention suggestions"
+          className="max-h-56 overflow-y-auto overscroll-contain p-1"
+        >
+          {suggestions.map((profile, index) => {
+            const active = index === activeIndex;
+
+            const name =
+              profile.display_name ||
+              profile.username;
+
+            return (
+              <button
+                key={profile.id}
+                id={`${id}-${index}`}
+                type="button"
+                role="option"
+                tabIndex={-1}
+                aria-selected={active}
+                onPointerMove={() =>
+                  onHighlight(index)
+                }
+                onMouseDown={(event) =>
+                  event.preventDefault()
+                }
+                onClick={() =>
+                  onSelect(profile)
+                }
+                className={`flex w-full min-w-0 items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors ${active
+                  ? "bg-blue-600/20 text-blue-300"
+                  : "text-gray-200 hover:bg-gray-800"
+                  }`}
+              >
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gray-700 text-sm font-semibold text-gray-200">
+                  {name.charAt(0).toUpperCase()}
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">
+                    {name}
+                  </p>
+
+                  <p className="truncate text-xs text-gray-400">
+                    @{profile.username}
+                  </p>
+                </div>
+
+                <AtSign
+                  size={15}
+                  className="shrink-0 text-gray-500"
+                />
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="hidden border-t border-gray-800 px-3 py-2 text-[11px] text-gray-500 sm:block">
+          ↑ ↓ Navigate · Enter Select · Esc Close
+        </div>
+      </div>
+    );
+  }
+);
 
 /* -------------------- MESSAGE INPUT -------------------- */
 
@@ -116,6 +212,7 @@ function MessageInput({
   onStopTyping,
   replySenderName,
   userId,
+  mentionMembers = EMPTY_MEMBERS,
 }) {
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -133,6 +230,14 @@ function MessageInput({
   const [processing, setProcessing] = useState(false);
   const [attachmentError, setAttachmentError] = useState(null);
 
+  const mentionListId = useId();
+
+  const [mentionQuery, setMentionQuery] = useState(null);
+  const [activeMentionIndex, setActiveMentionIndex] = useState(0);
+
+  const mentionSuggestions = useMemo(() => mentionQuery ? getMentionSuggestions(mentionMembers, mentionQuery.query) : EMPTY_MEMBERS, [mentionMembers, mentionQuery]);
+  const selectedMentionIndex = Math.min(activeMentionIndex, Math.max(0, mentionSuggestions.length - 1));
+
   const sending = useChatStore((s) => s.sending);
   const replyTo = useChatStore((s) => s.replyTo);
 
@@ -149,6 +254,11 @@ function MessageInput({
 
   const pickerDisabled = sending || processing;
 
+  const mentionsOpen =
+    !activePicker &&
+    !pickerDisabled &&
+    mentionSuggestions.length > 0;
+
   const canSend =
     !pickerDisabled &&
     Boolean(text.trim() || media);
@@ -159,15 +269,56 @@ function MessageInput({
       ? "Type a reply..."
       : "Type a message...";
 
+  /* -------------------- MENTION DETECTION -------------------- */
+
+  const closeMentions = useCallback(() => {
+    setMentionQuery(null);
+    setActiveMentionIndex(0);
+  }, []);
+
+  const syncMentionQuery = useCallback(
+    (input) => {
+      if (!input || !mentionMembers.length) {
+        closeMentions();
+        return;
+      }
+
+      const { start, end } = getCursor(input);
+
+      const next = getMentionQuery(
+        input.value,
+        start,
+        end
+      );
+
+      setMentionQuery((current) => {
+        if (
+          current?.query === next?.query &&
+          current?.start === next?.start &&
+          current?.end === next?.end
+        ) {
+          return current;
+        }
+
+        return next;
+      });
+
+      setActiveMentionIndex(0);
+    },
+    [mentionMembers.length, closeMentions]
+  );
+
   /* -------------------- CURSOR -------------------- */
 
   const rememberCursor = useCallback(() => {
     const input = inputRef.current;
 
-    if (input) {
-      cursorRef.current = getCursor(input);
-    }
-  }, []);
+    if (!input) return;
+
+    cursorRef.current = getCursor(input);
+
+    syncMentionQuery(input);
+  }, [syncMentionQuery]);
 
   const focusInput = useCallback(() => {
     const input = inputRef.current;
@@ -203,6 +354,23 @@ function MessageInput({
     };
   }, []);
 
+  useEffect(() => {
+    if (!mentionsOpen) return;
+
+    document
+      .getElementById(
+        `${mentionListId}-${selectedMentionIndex}`
+      )
+      ?.scrollIntoView({
+        block: "nearest",
+        inline: "nearest",
+      });
+  }, [
+    mentionsOpen,
+    mentionListId,
+    selectedMentionIndex,
+  ]);
+
   /* -------------------- TEXT -------------------- */
 
   const updateText = useCallback(
@@ -216,15 +384,71 @@ function MessageInput({
     [onTyping]
   );
 
+  /* -------------------- MENTION INSERTION -------------------- */
+
+  const selectMention = useCallback(
+    (profile) => {
+      if (
+        !profile?.username ||
+        useChatStore.getState().sending
+      ) {
+        return;
+      }
+
+      const { start, end } = cursorRef.current;
+
+      const currentQuery = getMentionQuery(
+        textRef.current,
+        start,
+        end
+      );
+
+      if (!currentQuery) {
+        closeMentions();
+        return;
+      }
+
+      const result = insertMention(
+        textRef.current,
+        profile.username,
+        currentQuery,
+        MAX_MESSAGE_LENGTH
+      );
+
+      if (!result) return;
+
+      cursorRef.current = {
+        start: result.cursor,
+        end: result.cursor,
+      };
+
+      pendingCursorRef.current = result.cursor;
+
+      updateText(result.text);
+
+      closeMentions();
+
+      inputRef.current?.focus();
+    },
+    [updateText, closeMentions]
+  );
+
   function handleChange(event) {
     cursorRef.current = getCursor(event.target);
     pendingCursorRef.current = null;
 
     updateText(event.target.value);
+    syncMentionQuery(event.target);
   }
 
   function handleBlur() {
-    rememberCursor();
+    const input = inputRef.current;
+
+    if (input) {
+      cursorRef.current = getCursor(input);
+    }
+
+    closeMentions();
     onStopTyping?.();
   }
 
@@ -237,7 +461,7 @@ function MessageInput({
 
   function togglePicker(picker) {
     if (pickerDisabled) return;
-
+    closeMentions();
     if (activePicker === picker) {
       closePicker();
       return;
@@ -316,7 +540,7 @@ function MessageInput({
 
   function openFilePicker() {
     if (pickerDisabled) return;
-
+    closeMentions();
     setActivePicker(null);
     fileInputRef.current?.click();
   }
@@ -369,6 +593,59 @@ function MessageInput({
   }
 
   function handleKeyDown(event) {
+    if (
+      event.nativeEvent.isComposing ||
+      event.defaultPrevented
+    ) {
+      return;
+    }
+
+    if (
+      mentionsOpen &&
+      event.target === inputRef.current
+    ) {
+      const count = mentionSuggestions.length;
+
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+
+        setActiveMentionIndex(
+          (selectedMentionIndex + 1) % count
+        );
+
+        return;
+      }
+
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+
+        setActiveMentionIndex(
+          (selectedMentionIndex - 1 + count) %
+          count
+        );
+
+        return;
+      }
+
+      if (event.key === "Enter") {
+        event.preventDefault();
+
+        selectMention(
+          mentionSuggestions[selectedMentionIndex]
+        );
+
+        return;
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+
+        closeMentions();
+
+        return;
+      }
+    }
+
     if (event.key !== "Escape") return;
 
     if (activePicker) {
@@ -377,7 +654,10 @@ function MessageInput({
     } else if (replyTo) {
       event.preventDefault();
       clearReply();
-    } else if ((media || processing) && !sending) {
+    } else if (
+      (media || processing) &&
+      !sending
+    ) {
       event.preventDefault();
       removeMedia();
     }
@@ -470,16 +750,58 @@ function MessageInput({
         />
       )}
 
+      {mentionsOpen && (
+        <MentionSuggestions
+          id={mentionListId}
+          suggestions={mentionSuggestions}
+          activeIndex={selectedMentionIndex}
+          onSelect={selectMention}
+          onHighlight={setActiveMentionIndex}
+        />
+      )}
+
       <form
         onSubmit={handleSubmit}
         className="flex min-w-0 items-center gap-1 p-2 sm:gap-3 sm:p-4"
       >
         <input
-          ref={fileInputRef}
-          type="file"
-          accept={FILE_ACCEPT}
-          onChange={handleFileSelection}
-          className="hidden"
+          ref={inputRef}
+          type="text"
+          value={text}
+          onChange={handleChange}
+          onSelect={rememberCursor}
+          onFocus={rememberCursor}
+          onBlur={handleBlur}
+          placeholder={placeholder}
+          maxLength={MAX_MESSAGE_LENGTH}
+          autoComplete="off"
+          role={
+            mentionMembers.length
+              ? "combobox"
+              : undefined
+          }
+          aria-label="Message"
+          aria-autocomplete={
+            mentionMembers.length
+              ? "list"
+              : undefined
+          }
+          aria-expanded={
+            mentionMembers.length
+              ? mentionsOpen
+              : undefined
+          }
+          aria-controls={
+            mentionsOpen
+              ? mentionListId
+              : undefined
+          }
+          aria-activedescendant={
+            mentionsOpen
+              ? `${mentionListId}-${selectedMentionIndex}`
+              : undefined
+          }
+          className="block min-w-0 flex-1 rounded-xl border border-gray-700 bg-gray-800 px-3 py-3 text-white placeholder-gray-400 outline-none transition-colors focus:border-blue-500 sm:px-4"
         />
 
         <PickerButton

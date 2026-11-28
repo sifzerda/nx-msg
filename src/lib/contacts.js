@@ -1,6 +1,7 @@
 // src/lib/contacts.js
 
 import { createClient } from "@/lib/supabase/client";
+import { isUuid } from "@/utils/validation";
 
 const supabase = createClient();
 
@@ -15,10 +16,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 /* -------------------- HELPERS -------------------- */
 
 function validateContactId(contactId) {
-  if (
-    typeof contactId !== "string" ||
-    !UUID_PATTERN.test(contactId)
-  ) {
+  if (!isUuid(contactId)) {
     throw new Error("Invalid contact ID.");
   }
 }

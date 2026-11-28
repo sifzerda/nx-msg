@@ -330,7 +330,7 @@ export function getSystemPrefersDark() {
     : window.matchMedia(SYSTEM_THEME_QUERY).matches;
 }
 
-export function resolveTheme(
+function resolveTheme(
   theme,
   prefersDark = true
 ) {

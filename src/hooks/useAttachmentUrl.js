@@ -14,6 +14,11 @@ import {
   ATTACHMENT_EXPIRY_BUFFER,
 } from "@/lib/extras/attachments";
 
+import {
+  getPageVisible,
+  scheduleBrowserTask,
+} from "@/hooks/useBrowser";
+
 export default function useAttachmentUrl(path, userId) {
   const [state, setState] = useState(null);
   const [attempt, setAttempt] = useState(0);
@@ -32,35 +37,75 @@ export default function useAttachmentUrl(path, userId) {
     if (!key) return;
 
     let active = true;
-    let timer = null;
     let request = null;
-    let expiresAt = 0;
+    let entry = null;
+    let cancelTask = null;
 
-    function clearTimer() {
-      clearTimeout(timer);
-      timer = null;
+    function clearTask() {
+      cancelTask?.();
+      cancelTask = null;
     }
 
-    function isVisible() {
-      return document.visibilityState === "visible";
+    function scheduleTask(callback, deadline) {
+      clearTask();
+
+      if (!active) return;
+
+      cancelTask = scheduleBrowserTask(
+        () => {
+          cancelTask = null;
+
+          if (active) {
+            callback();
+          }
+        },
+        deadline
+      );
     }
 
     function scheduleRenewal() {
-      clearTimer();
+      if (!entry) return;
 
-      if (!active || !isVisible()) return;
-
-      const delay = Math.max(
-        1000,
-        expiresAt -
-          Date.now() -
+      const deadline = Math.max(
+        Date.now() + 1000,
+        entry.expiresAt -
           ATTACHMENT_EXPIRY_BUFFER
       );
 
-      timer = setTimeout(() => {
-        timer = null;
-        void loadUrl();
-      }, delay);
+      scheduleTask(loadUrl, deadline);
+    }
+
+    function handleError(error) {
+      const message =
+        error?.message ||
+        "Unable to load attachment";
+
+      // Preserve the existing URL until its
+      // known expiry if renewal fails.
+      if (
+        entry &&
+        entry.expiresAt > Date.now()
+      ) {
+        scheduleTask(() => {
+          entry = null;
+
+          setState({
+            key,
+            url: null,
+            error: message,
+          });
+        }, entry.expiresAt);
+
+        return;
+      }
+
+      entry = null;
+
+      setState({
+        key,
+        url: null,
+        error: message,
+      });
     }
 
     function loadUrl() {
@@ -68,17 +113,30 @@ export default function useAttachmentUrl(path, userId) {
 
       if (request) return request;
 
+      if (!getPageVisible()) {
+        scheduleTask(loadUrl, Date.now());
+        return;
+      }
+
       request = Promise.resolve()
         .then(async () => {
+          if (!active) return;
+
+          if (!getPageVisible()) {
+            scheduleTask(loadUrl, Date.now());
+            return;
+          }
+
           try {
-            const entry = await getAttachmentUrl(
-              path,
-              userId
-            );
+            const nextEntry =
+              await getAttachmentUrl(
+                path,
+                userId
+              );
 
             if (!active) return;
 
-            expiresAt = entry.expiresAt;
+            entry = nextEntry;
 
             setState((previous) => {
               if (
@@ -100,15 +158,7 @@ export default function useAttachmentUrl(path, userId) {
           } catch (error) {
             if (!active) return;
 
-            expiresAt = 0;
-
-            setState({
-              key,
-              url: null,
-              error:
-                error?.message ||
-                "Unable to load attachment",
-            });
+            handleError(error);
           }
         })
         .finally(() => {
@@ -118,40 +168,11 @@ export default function useAttachmentUrl(path, userId) {
       return request;
     }
 
-    function handleVisibility() {
-      if (!active) return;
-
-      if (!isVisible()) {
-        clearTimer();
-        return;
-      }
-
-      if (
-        expiresAt <=
-        Date.now() + ATTACHMENT_EXPIRY_BUFFER
-      ) {
-        void loadUrl();
-      } else {
-        scheduleRenewal();
-      }
-    }
-
-    document.addEventListener(
-      "visibilitychange",
-      handleVisibility
-    );
-
     void loadUrl();
 
     return () => {
       active = false;
-
-      clearTimer();
-
-      document.removeEventListener(
-        "visibilitychange",
-        handleVisibility
-      );
+      clearTask();
     };
   }, [key, path, userId]);
 

@@ -4,19 +4,15 @@ import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-
+import { isUuid } from "@/utils/validation";
 import {
     consumePreviewQuota,
     PreviewBusyError,
 } from "./linkPreviewCache";
-
 import { extractPreviewUrl } from "@/utils/previewUrlPolicy";
 import { PREVIEW_RATE_WINDOW } from "@/constants/linkPreviews";
 
 /* -------------------- CONSTANTS -------------------- */
-
-const UUID_PATTERN =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const MAX_REQUEST_BYTES = 1024;
 
@@ -28,7 +24,7 @@ export const RESPONSE_HEADERS = Object.freeze({
 
 /* -------------------- ERRORS -------------------- */
 
-export class PreviewRequestError extends Error {
+class PreviewRequestError extends Error {
     constructor(status, message, headers = {}) {
         super(message);
 
@@ -41,14 +37,8 @@ export class PreviewRequestError extends Error {
 /* -------------------- REQUEST VALIDATION -------------------- */
 
 export function validateMessageId(value) {
-    if (
-        typeof value !== "string" ||
-        !UUID_PATTERN.test(value)
-    ) {
-        throw new PreviewRequestError(
-            400,
-            "Invalid message ID"
-        );
+    if (!isUuid(value)) {
+        throw new PreviewRequestError(400, "Invalid message ID");
     }
 
     return value;
@@ -58,9 +48,7 @@ export function validateRequestOrigin(
     request,
     { requireOrigin = false } = {}
 ) {
-    const fetchSite = request.headers.get(
-        "sec-fetch-site"
-    );
+    const fetchSite = request.headers.get("sec-fetch-site");
 
     if (
         fetchSite &&

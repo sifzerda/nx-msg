@@ -412,7 +412,7 @@ export async function consumePreviewQuota(
 
 /* -------------------- CACHE MANAGEMENT -------------------- */
 
-export function invalidateMemoryPreview(value) {
+function invalidateMemoryPreview(value) {
   const url = normalizeUrl(value);
 
   if (!url) return;
@@ -422,7 +422,7 @@ export function invalidateMemoryPreview(value) {
   memoryCache.delete(url);
 }
 
-export function clearPreviewMemoryCache() {
+function clearPreviewMemoryCache() {
   cacheGeneration++;
 
   memoryCache.clear();

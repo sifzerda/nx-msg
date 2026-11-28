@@ -4,223 +4,99 @@
 
 import {
   useCallback,
-  useEffect,
-  useRef,
   useState,
 } from "react";
 
-import { searchMessages } from "@/lib/messageSearch";
+import {
+  searchMessages,
+  MIN_SEARCH_LENGTH,
+  MAX_SEARCH_LENGTH,
+} from "@/lib/messageSearch";
+
+import usePaginatedSearch from "./usePaginatedSearch";
 
 const SEARCH_DELAY = 350;
-const MIN_QUERY_LENGTH = 2;
 
-const INITIAL_STATE = {
-  results: [],
-  loading: false,
-  loadingMore: false,
-  hasMore: false,
-  nextCursor: null,
-  error: null,
-};
+/* -------------------- PAGE ADAPTER -------------------- */
+
+async function fetchMessagePage({
+  query,
+  scope,
+  cursor,
+  signal,
+}) {
+  const result = await searchMessages({
+    conversationId: scope,
+    query,
+    cursor,
+    signal,
+  });
+
+  return {
+    items: result.results,
+    cursor: result.nextCursor,
+    hasMore: result.hasMore,
+  };
+}
+
+/* -------------------- CONVERSATION SEARCH -------------------- */
 
 export default function useConversationSearch(
   conversationId
 ) {
   const [query, setQuery] = useState("");
-  const [state, setState] = useState(
-    INITIAL_STATE
-  );
-
-  const requestRef = useRef(null);
-  const generationRef = useRef(0);
-  const loadingMoreRef = useRef(false);
 
   const normalizedQuery = query.trim();
 
-  useEffect(() => {
-    const generation =
-      ++generationRef.current;
+  const length = Array.from(
+    normalizedQuery
+  ).length;
 
-    requestRef.current?.abort();
-    requestRef.current = null;
-    loadingMoreRef.current = false;
+  const enabled =
+    Boolean(conversationId) &&
+    length >= MIN_SEARCH_LENGTH &&
+    length <= MAX_SEARCH_LENGTH;
 
-    if (
-      !conversationId ||
-      normalizedQuery.length < MIN_QUERY_LENGTH
-    ) {
-      setState(INITIAL_STATE);
-      return;
-    }
+  const {
+    items,
+    cursor,
+    hasMore,
+    loading,
+    loadingMore,
+    error,
+    loadMore,
+    reset,
+  } = usePaginatedSearch({
+    query: normalizedQuery,
+    scope: conversationId ?? null,
+    enabled,
+    delay: SEARCH_DELAY,
+    initialCursor: null,
 
-    const controller =
-      new AbortController();
+    fetchPage: fetchMessagePage,
 
-    requestRef.current = controller;
-
-    setState({
-      ...INITIAL_STATE,
-      loading: true,
-    });
-
-    const timer = setTimeout(async () => {
-      try {
-        const response = await searchMessages({
-          conversationId,
-          query: normalizedQuery,
-          signal: controller.signal,
-        });
-
-        if (
-          controller.signal.aborted ||
-          generation !== generationRef.current
-        ) {
-          return;
-        }
-
-        setState({
-          ...INITIAL_STATE,
-          ...response,
-        });
-      } catch (error) {
-        if (
-          controller.signal.aborted ||
-          generation !== generationRef.current
-        ) {
-          return;
-        }
-
-        setState({
-          ...INITIAL_STATE,
-          error:
-            error.message ||
-            "Unable to search messages.",
-        });
-      }
-    }, SEARCH_DELAY);
-
-    return () => {
-      clearTimeout(timer);
-
-      controller.abort();
-      requestRef.current?.abort();
-
-      generationRef.current += 1;
-    };
-  }, [conversationId, normalizedQuery]);
-
-  const loadMore = useCallback(async () => {
-    if (
-      !conversationId ||
-      state.loading ||
-      loadingMoreRef.current ||
-      !state.hasMore ||
-      !state.nextCursor
-    ) {
-      return;
-    }
-
-    const generation =
-      generationRef.current;
-
-    const controller =
-      new AbortController();
-
-    requestRef.current = controller;
-    loadingMoreRef.current = true;
-
-    setState((current) => ({
-      ...current,
-      loadingMore: true,
-      error: null,
-    }));
-
-    try {
-      const response = await searchMessages({
-        conversationId,
-        query: normalizedQuery,
-        cursor: state.nextCursor,
-        signal: controller.signal,
-      });
-
-      if (
-        controller.signal.aborted ||
-        generation !== generationRef.current
-      ) {
-        return;
-      }
-
-      setState((current) => {
-        const existingIds = new Set(
-          current.results.map(
-            (message) => message.id
-          )
-        );
-
-        const newResults =
-          response.results.filter(
-            (message) =>
-              !existingIds.has(message.id)
-          );
-
-        return {
-          ...current,
-          results: [
-            ...current.results,
-            ...newResults,
-          ],
-          hasMore: response.hasMore,
-          nextCursor: response.nextCursor,
-          loadingMore: false,
-        };
-      });
-    } catch (error) {
-      if (
-        controller.signal.aborted ||
-        generation !== generationRef.current
-      ) {
-        return;
-      }
-
-      setState((current) => ({
-        ...current,
-        loadingMore: false,
-        error:
-          error.message ||
-          "Unable to load more results.",
-      }));
-    } finally {
-      if (
-        generation === generationRef.current
-      ) {
-        loadingMoreRef.current = false;
-      }
-    }
-  }, [
-    conversationId,
-    normalizedQuery,
-    state.loading,
-    state.hasMore,
-    state.nextCursor,
-  ]);
+    searchError: "Unable to search messages.",
+    paginationError: "Unable to load more results.",
+  });
 
   const clearSearch = useCallback(() => {
-    generationRef.current += 1;
-
-    requestRef.current?.abort();
-    requestRef.current = null;
-
-    loadingMoreRef.current = false;
-
+    reset();
     setQuery("");
-    setState(INITIAL_STATE);
-  }, []);
+  }, [reset]);
 
   return {
     query,
     setQuery,
     clearSearch,
+
+    results: items,
+    nextCursor: cursor,
+
+    hasMore,
+    loading,
+    loadingMore,
+    error,
+
     loadMore,
-    ...state,
   };
 }

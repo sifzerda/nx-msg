@@ -20,9 +20,10 @@ export function safeExportFilename(value) {
   return (
     String(value || "conversation")
       .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
-      .replace(/[. ]+$/g, "")
       .trim()
-      .slice(0, 80) || "conversation"
+      .slice(0, 80)
+      .replace(/[. ]+$/g, "") ||
+    "conversation"
   );
 }
 
@@ -32,8 +33,10 @@ export function formatExportMessage(message) {
   const content = message.content?.trim() || "";
 
   if (message.gif_id) {
-    lines.push("[GIF]");
-    lines.push(`GIPHY ID: ${message.gif_id}`);
+    lines.push(
+      "[GIF]",
+      `GIPHY ID: ${message.gif_id}`
+    );
   } else if (message.attachment_type === "image") {
     lines.push(
       `[Image: ${message.attachment_name || "Photo"}]`
@@ -44,22 +47,18 @@ export function formatExportMessage(message) {
     );
   }
 
-  if (
-    message.attachment_path &&
-    message.attachment_size != null
-  ) {
-    lines.push(
-      `Size: ${formatFileSize(message.attachment_size)}`
-    );
-  }
+  if (message.attachment_path) {
+    if (message.attachment_size != null) {
+      lines.push(
+        `Size: ${formatFileSize(message.attachment_size)}`
+      );
+    }
 
-  if (
-    message.attachment_path &&
-    message.attachment_mime_type
-  ) {
-    lines.push(
-      `Type: ${message.attachment_mime_type}`
-    );
+    if (message.attachment_mime_type) {
+      lines.push(
+        `Type: ${message.attachment_mime_type}`
+      );
+    }
   }
 
   if (content) {
@@ -89,7 +88,6 @@ export function formatExportReply(
     "Unknown user";
 
   const preview = formatExportMessage(original)
-    .replace(/\r?\n/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 

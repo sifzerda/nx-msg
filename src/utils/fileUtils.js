@@ -1,14 +1,14 @@
 // src/utils/fileUtils.js
 
 import {
-  File,
+  File as FileIcon,
   FileText,
   FileSpreadsheet,
   FileAudio,
   FileArchive,
   FileJson,
   Presentation,
-  Image,
+  Image as ImageIcon,
 } from "lucide-react";
 
 import {
@@ -23,7 +23,7 @@ import {
 const FILE_GROUPS = [
   [
     ["jpg", "jpeg", "png", "webp"],
-    Image,
+    ImageIcon,
     "Image",
     "text-green-400",
   ],
@@ -78,7 +78,7 @@ const FILE_GROUPS = [
 ];
 
 const DEFAULT_FILE_INFO = Object.freeze({
-  icon: File,
+  icon: FileIcon,
   label: "File",
   color: "text-gray-400",
 });
@@ -100,7 +100,7 @@ for (const [extensions, icon, label, color] of FILE_GROUPS) {
 
 /* -------------------- FILE TYPE -------------------- */
 
-export function getFileExtension(name) {
+function getFileExtension(name) {
   if (typeof name !== "string") return "";
 
   const index = name.lastIndexOf(".");
@@ -110,12 +110,14 @@ export function getFileExtension(name) {
     : name.slice(index + 1).toLowerCase();
 }
 
-export function getFileMimeType(name) {
-  const extension = getFileExtension(name);
-
+function getMimeType(extension) {
   return Object.hasOwn(FILE_TYPES, extension)
     ? FILE_TYPES[extension]
     : null;
+}
+
+function getFileMimeType(name) {
+  return getMimeType(getFileExtension(name));
 }
 
 export function getFileInfo(name) {
@@ -161,19 +163,25 @@ function getValidatedFileInfo(file) {
   }
 
   const extension = getFileExtension(file.name);
-  const mimeType = getFileMimeType(file.name);
+  const mimeType = getMimeType(extension);
 
   if (!mimeType) {
     throw new Error("Unsupported file format");
   }
 
   if (!Number.isFinite(file.size) || file.size <= 0) {
-    throw new Error("The selected file is empty or invalid");
+    throw new Error(
+      "The selected file is empty or invalid"
+    );
   }
 
   return {
-    extension: extension === "jpeg" ? "jpg" : extension,
+    extension: extension === "jpeg"
+      ? "jpg"
+      : extension,
+
     mimeType,
+
     isImage: ALLOWED_IMAGE_TYPES.includes(mimeType),
   };
 }
@@ -201,7 +209,7 @@ export function validateSourceImage(file) {
 
   if (file.size > MAX_SOURCE_IMAGE_SIZE) {
     throw new Error(
-      "Original image must not exceed 30 MB"
+      `Original image must not exceed ${formatFileSize(MAX_SOURCE_IMAGE_SIZE)}`
     );
   }
 

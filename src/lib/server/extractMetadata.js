@@ -259,7 +259,7 @@ function getNodePriority(types) {
     return 1;
 }
 
-function collectStructuredNodes(value, nodes, budget,depth = 0) {
+function collectStructuredNodes(value, nodes, budget, depth = 0) {
     if (
         !value ||
         typeof value !== "object" ||
@@ -499,7 +499,7 @@ export function getMetadataQuality(metadata) {
 
 /* -------------------- HTML METADATA -------------------- */
 
-export function parseMetadata(html, finalUrl) {
+function parseMetadata(html, finalUrl) {
     const $ = load(html);
 
     const hostname = getUrlHostname(finalUrl);
@@ -527,7 +527,7 @@ export function parseMetadata(html, finalUrl) {
         getStructuredText(getStructuredNodes(), ["description"], MAX_DESCRIPTION_LENGTH);
 
     const siteName =
-        getMetaText(metaIndex,  META_KEYS.siteName, MAX_SITE_NAME_LENGTH) ||
+        getMetaText(metaIndex, META_KEYS.siteName, MAX_SITE_NAME_LENGTH) ||
         getStructuredSiteName(getStructuredNodes()) ||
         cleanText(hostname, MAX_SITE_NAME_LENGTH);
 
@@ -569,7 +569,7 @@ function resolveYouTubeThumbnail(value) {
     }
 }
 
-export function parseYouTubeMetadata(data, canonicalUrl) {
+function parseYouTubeMetadata(data, canonicalUrl) {
     if (
         !data || typeof data !== "object" || data.type !== "video"
     ) {
@@ -591,7 +591,7 @@ export function parseYouTubeMetadata(data, canonicalUrl) {
     };
 }
 
-export async function extractYouTubeMetadata(value, { timeoutMs = YOUTUBE_FETCH_TIMEOUT } = {}) {
+async function extractYouTubeMetadata(value, { timeoutMs = YOUTUBE_FETCH_TIMEOUT } = {}) {
     if (!isPreviewAllowed(value)) {
         return null;
     }
@@ -622,44 +622,44 @@ export async function extractYouTubeMetadata(value, { timeoutMs = YOUTUBE_FETCH_
 /* -------------------- FETCH AND EXTRACT -------------------- */
 
 export async function extractMetadata(value) {
-  if (!isPreviewAllowed(value)) {
-    throw new Error("Sensitive preview URL blocked");
-  }
-
-  const deadline = performance.now() + METADATA_FETCH_TIMEOUT;
-
-  function remainingTime() {
-    const remaining = deadline - performance.now();
-
-    if (remaining <= 0) {
-      throw new Error("Metadata extraction timed out");
+    if (!isPreviewAllowed(value)) {
+        throw new Error("Sensitive preview URL blocked");
     }
 
-    return remaining;
-  }
+    const deadline = performance.now() + METADATA_FETCH_TIMEOUT;
 
-  if (getYouTubeVideoId(value)) {
-    try {
-      const metadata = await extractYouTubeMetadata(value, { timeoutMs: remainingTime() });
+    function remainingTime() {
+        const remaining = deadline - performance.now();
 
-      if (metadata) {
-        return metadata;
-      }
-    } catch (error) {
-      if (process.env.NODE_ENV === "development") {
-        console.warn("[LinkPreview] YouTube provider failed",
-          {
-            name: error?.name,
-            code: error?.cause?.code ?? error?.code,
-          }
-        );
-      }
+        if (remaining <= 0) {
+            throw new Error("Metadata extraction timed out");
+        }
 
-      // Continue with standard HTML extraction.
+        return remaining;
     }
-  }
 
-  const { html, finalUrl } = await safeFetchHtml(value, { timeoutMs: remainingTime() });
+    if (getYouTubeVideoId(value)) {
+        try {
+            const metadata = await extractYouTubeMetadata(value, { timeoutMs: remainingTime() });
 
-  return parseMetadata(html, finalUrl);
+            if (metadata) {
+                return metadata;
+            }
+        } catch (error) {
+            if (process.env.NODE_ENV === "development") {
+                console.warn("[LinkPreview] YouTube provider failed",
+                    {
+                        name: error?.name,
+                        code: error?.cause?.code ?? error?.code,
+                    }
+                );
+            }
+
+            // Continue with standard HTML extraction.
+        }
+    }
+
+    const { html, finalUrl } = await safeFetchHtml(value, { timeoutMs: remainingTime() });
+
+    return parseMetadata(html, finalUrl);
 }

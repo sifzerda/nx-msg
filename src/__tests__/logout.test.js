@@ -51,6 +51,7 @@ const mockFetch = jest.fn();
 const mockGetRegistration = jest.fn();
 const mockGetSubscription = jest.fn();
 const mockUnsubscribe = jest.fn();
+const mockGetNotifications = jest.fn();
 
 const ENDPOINT = "https://push.example.com/subscription";
 
@@ -63,6 +64,7 @@ const mockRegistration = {
   pushManager: {
     getSubscription: mockGetSubscription,
   },
+  getNotifications: mockGetNotifications,
 };
 
 /* -------------------- REGISTER MOCKS -------------------- */
@@ -227,7 +229,11 @@ let originalServiceWorker;
 
 beforeEach(() => {
   jest.resetAllMocks();
-
+  mockCreateClient.mockReturnValue({
+    auth: {
+      signOut: mockSignOut,
+    },
+  });
   originalFetch = Object.getOwnPropertyDescriptor(
     globalThis,
     "fetch"
@@ -254,6 +260,8 @@ beforeEach(() => {
   mockGetSubscription.mockResolvedValue(null);
 
   mockUnsubscribe.mockResolvedValue(true);
+
+  mockGetNotifications.mockResolvedValue([]);
 
   mockFetch.mockResolvedValue({
     ok: true,
@@ -284,7 +292,7 @@ beforeEach(() => {
 
   errorSpy = jest
     .spyOn(console, "error")
-    .mockImplementation(() => {});
+    .mockImplementation(() => { });
 });
 
 afterEach(() => {
@@ -734,7 +742,7 @@ describe("Logout - server cleanup failures", () => {
     expect(
       result.pushCleanupError
     ).toMatchObject({
-      message: "Push unsubscribe failed (502)",
+      message: "Request failed (502)",
     });
   });
 
@@ -751,7 +759,7 @@ describe("Logout - server cleanup failures", () => {
     expect(
       result.pushCleanupError
     ).toMatchObject({
-      message: "Push unsubscribe failed (503)",
+      message: "Request failed (503)",
     });
   });
 
@@ -769,8 +777,8 @@ describe("Logout - server cleanup failures", () => {
     await logout();
 
     expect(errorSpy).toHaveBeenCalledWith(
-      "Server push cleanup failed:",
-      expect.any(Error)
+      "Push logout cleanup failed:",
+      "Unsubscribe failed"
     );
   });
 });
@@ -789,25 +797,23 @@ describe("Logout - browser cleanup failures", () => {
 
     expect(result.success).toBe(true);
 
-    expect(
-      result.pushCleanupError
-    ).toMatchObject({
-      message:
-        "Browser subscription could not be removed",
+    expect(result.pushCleanupError).toMatchObject({
+      message: "Browser subscription could not be removed.",
     });
   });
 
   test("handles browser unsubscribe rejection", async () => {
-    const error = new Error(
-      "Browser unsubscribe failed"
+    mockUnsubscribe.mockRejectedValue(
+      new Error("Browser unsubscribe failed")
     );
-
-    mockUnsubscribe.mockRejectedValue(error);
 
     const result = await logout();
 
     expect(result.success).toBe(true);
-    expect(result.pushCleanupError).toBe(error);
+
+    expect(result.pushCleanupError).toMatchObject({
+      message: "Browser subscription cleanup failed.",
+    });
   });
 
   test("still resets stores after browser cleanup failure", async () => {
@@ -825,8 +831,8 @@ describe("Logout - browser cleanup failures", () => {
     await logout();
 
     expect(errorSpy).toHaveBeenCalledWith(
-      "Browser push cleanup failed:",
-      expect.any(Error)
+      "Push logout cleanup failed:",
+      "Browser subscription could not be removed."
     );
   });
 
@@ -894,16 +900,11 @@ describe("Logout - push preparation failures", () => {
     const result = await logout();
 
     expect(result.success).toBe(true);
-
-    expect(
-      mockSignOut
-    ).toHaveBeenCalledTimes(1);
+    expect(mockSignOut).toHaveBeenCalledTimes(1);
   });
 
   test("returns the preparation error", async () => {
-    const error = new Error(
-      "Preparation failed"
-    );
+    const error = new Error("Preparation failed");
 
     mockPrepareForLogout.mockRejectedValue(error);
 
@@ -922,10 +923,7 @@ describe("Logout - push preparation failures", () => {
     await logout();
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
-
-    expect(
-      mockUnsubscribe
-    ).toHaveBeenCalledTimes(1);
+    expect(mockUnsubscribe).toHaveBeenCalledTimes(1);
   });
 
   test("preserves preparation errors over later cleanup errors", async () => {
@@ -945,23 +943,21 @@ describe("Logout - push preparation failures", () => {
 
     const result = await logout();
 
-    expect(
-      result.pushCleanupError
-    ).toBe(preparationError);
+    expect(result.pushCleanupError).toBe(
+      preparationError
+    );
   });
 
   test("logs preparation failures", async () => {
-    const error = new Error(
-      "Preparation failed"
-    );
+    const error = new Error("Preparation failed");
 
     mockPrepareForLogout.mockRejectedValue(error);
 
     await logout();
 
     expect(errorSpy).toHaveBeenCalledWith(
-      "Failed to prepare notifications for logout:",
-      error
+      "Push logout cleanup failed:",
+      error.message
     );
   });
 });
@@ -1059,9 +1055,7 @@ describe("Logout - sign-out failures", () => {
   });
 
   test("preserves the sign-out error when notification restoration fails", async () => {
-    const signOutError = new Error(
-      "Signout failed"
-    );
+    const signOutError = new Error("Signout failed");
 
     const restoreError = new Error(
       "Notification restoration failed"
@@ -1071,19 +1065,15 @@ describe("Logout - sign-out failures", () => {
       error: signOutError,
     });
 
-    mockRefreshPush.mockRejectedValue(
-      restoreError
-    );
+    mockRefreshPush.mockRejectedValue(restoreError);
 
-    await expect(logout()).rejects.toBe(
-      signOutError
-    );
+    await expect(logout()).rejects.toBe(signOutError);
 
     await flushPromises();
 
     expect(errorSpy).toHaveBeenCalledWith(
       "Failed to restore notifications:",
-      restoreError
+      restoreError.message
     );
   });
 
@@ -1158,21 +1148,23 @@ describe("Logout - asynchronous ordering", () => {
     try {
       await started.promise;
 
-      expect(
-        mockUnsubscribe
-      ).not.toHaveBeenCalled();
-
-      expect(
-        mockSignOut
-      ).not.toHaveBeenCalled();
+      expect(mockUnsubscribe).not.toHaveBeenCalled();
+      expect(mockSignOut).not.toHaveBeenCalled();
     } finally {
       request.resolve({
         ok: true,
         status: 200,
+        json: async () => ({
+          success: true,
+        }),
       });
 
       await operation;
     }
+
+    expect(mockUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(mockSignOut).toHaveBeenCalledTimes(1);
+    expect((await operation).pushCleanupError).toBeNull();
   });
 
   test("waits for browser unsubscribe before sign-out", async () => {

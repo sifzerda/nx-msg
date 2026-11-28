@@ -6,7 +6,7 @@ import {
   applyAppearance,
 } from "./appearance";
 
-export function createAppearanceScript() {
+function createAppearanceScript() {
   const config = JSON.stringify(APPEARANCE_CONFIG)
     .replace(/</g, "\\u003c")
     .replace(/>/g, "\\u003e")

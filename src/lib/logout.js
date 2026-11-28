@@ -17,6 +17,10 @@ import useBlockStore from "@/store/useBlockStore";
 
 let logoutRequest = null;
 
+export function redirectAfterLogout() {
+    window.location.replace("/login");
+}
+
 /* -------------------- APPLICATION CLEANUP -------------------- */
 
 export function resetApplication() {

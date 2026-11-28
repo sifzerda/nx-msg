@@ -1,20 +1,14 @@
 // src/lib/presence.js
 
 import { createClient } from "@/lib/supabase/client";
+import { isUuid } from "@/utils/validation";
 
 const supabase = createClient();
 
 const CHANNEL_NAME = "messenger-presence";
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function isValidUserId(id) {
-  return typeof id === "string" && UUID_PATTERN.test(id);
-}
-
 export function subscribeToPresence(userId, onChange) {
-  if (!isValidUserId(userId)) {
+  if (!isUuid(userId)) {
     throw new Error("Invalid presence user ID");
   }
 
@@ -33,9 +27,7 @@ export function subscribeToPresence(userId, onChange) {
 
     onChange(
       Object.keys(state).filter(
-        (id) =>
-          isValidUserId(id) &&
-          state[id]?.length > 0
+        (id) => isUuid(id) && state[id]?.length > 0
       )
     );
   }

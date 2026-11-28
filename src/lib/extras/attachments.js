@@ -11,6 +11,7 @@ import {
 import {
   validateFile,
   normalizeFile,
+  formatFileSize,
 } from "@/utils/fileUtils";
 
 const supabase = createClient();
@@ -38,25 +39,31 @@ function isFresh(entry) {
   return (
     entry &&
     entry.expiresAt >
-    Date.now() + ATTACHMENT_EXPIRY_BUFFER
+      Date.now() + ATTACHMENT_EXPIRY_BUFFER
   );
 }
 
-function cacheEntry(key, entry) {
-  const now = Date.now();
+function getCachedEntry(key) {
+  const entry = urlCache.get(key);
 
-  // Remove expired entries.
-  for (const [id, cached] of urlCache) {
-    if (cached.expiresAt <= now) {
-      urlCache.delete(id);
-    }
+  if (!entry) return null;
+
+  urlCache.delete(key);
+
+  if (!isFresh(entry)) {
+    return null;
   }
 
-  // Move updated entries to the end.
+  // Move to the end of the LRU cache.
+  urlCache.set(key, entry);
+
+  return entry;
+}
+
+function cacheEntry(key, entry) {
   urlCache.delete(key);
   urlCache.set(key, entry);
 
-  // Evict least recently used entries.
   while (urlCache.size > MAX_CACHE_SIZE) {
     urlCache.delete(
       urlCache.keys().next().value
@@ -84,12 +91,15 @@ export async function uploadAttachment({
   } = info;
 
   if (isImage && file.size > MAX_IMAGE_SIZE) {
-    throw new Error("Image exceeds the 5 MB limit");
+    throw new Error(
+      `Image exceeds the ${formatFileSize(MAX_IMAGE_SIZE)} limit`
+    );
   }
 
-const normalizedFile = normalizeFile(file, info);
+  const normalizedFile = normalizeFile(file, info);
 
-  const path = `${conversationId}/${userId}/` + `${crypto.randomUUID()}.${extension}`;
+  const path =
+    `${conversationId}/${userId}/${crypto.randomUUID()}.${extension}`;
 
   const { error } = await getStorage().upload(
     path,
@@ -121,17 +131,11 @@ export async function getAttachmentUrl(path, userId) {
 
   const key = getCacheKey(path, userId);
 
-  const cached = urlCache.get(key);
+  const cached = getCachedEntry(key);
 
-  if (isFresh(cached)) {
-    // Mark as recently used.
-    urlCache.delete(key);
-    urlCache.set(key, cached);
-
+  if (cached) {
     return cached;
   }
-
-  urlCache.delete(key);
 
   const pending = pendingRequests.get(key);
 
@@ -141,8 +145,23 @@ export async function getAttachmentUrl(path, userId) {
 
   const generation = cacheGeneration;
 
+  function assertCurrentRequest() {
+    if (
+      generation !== cacheGeneration ||
+      pendingRequests.get(key) !== request
+    ) {
+      throw new Error(
+        "Attachment request invalidated"
+      );
+    }
+  }
+
   const request = Promise.resolve()
     .then(async () => {
+      // Avoid contacting Supabase if the request
+      // was invalidated before it started.
+      assertCurrentRequest();
+
       const startedAt = Date.now();
 
       const { data, error } =
@@ -151,14 +170,8 @@ export async function getAttachmentUrl(path, userId) {
           SIGNED_URL_EXPIRY
         );
 
-      if (
-        generation !== cacheGeneration ||
-        pendingRequests.get(key) !== request
-      ) {
-        throw new Error(
-          "Attachment request invalidated"
-        );
-      }
+      // Do not cache results from invalidated requests.
+      assertCurrentRequest();
 
       if (error) throw error;
 

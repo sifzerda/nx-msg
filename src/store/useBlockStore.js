@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { blockUser, unblockUser, getBlockedUsers } from "@/lib/blocks";
 import useChatStore from "./useChatStore";
 import usePresenceStore from "./usePresenceStore";
+import { isUuid } from "@/utils/validation";
 
 const CACHE_TTL = 60_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -175,11 +176,10 @@ const useBlockStore = create((set, get) => {
     }
 
     function mutateBlock(userId, action) {
-        if (
-            typeof userId !== "string" ||
-            !UUID_PATTERN.test(userId)
-        ) {
-            return Promise.reject(new Error("Invalid user ID"));
+        if (!isUuid(userId)) {
+            return Promise.reject(
+                new Error("Invalid user ID")
+            );
         }
 
         const existing = pendingMutations.get(userId);

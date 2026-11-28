@@ -306,7 +306,7 @@ export async function getPreviewImage(value) {
 
 /* -------------------- CACHE MANAGEMENT -------------------- */
 
-export function invalidatePreviewImage(value) {
+function invalidatePreviewImage(value) {
   const url = normalizeUrl(value);
 
   if (!url) return;
@@ -317,7 +317,7 @@ export function invalidatePreviewImage(value) {
   failedImageCache.delete(url);
 }
 
-export function clearPreviewImageCache() {
+function clearPreviewImageCache() {
   cacheGeneration++;
 
   imageCache.clear();
@@ -328,7 +328,7 @@ export function clearPreviewImageCache() {
 
 /* -------------------- DIAGNOSTICS -------------------- */
 
-export function getPreviewImageCacheStats() {
+function getPreviewImageCacheStats() {
   const now = Date.now();
 
   for (const [key, entry] of imageCache) {

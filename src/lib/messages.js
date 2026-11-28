@@ -2,7 +2,8 @@
 
 import { createClient } from "@/lib/supabase/client";
 import { isValidGifId } from "@/lib/extras/gifs";
-import { MAX_MESSAGE_LENGTH } from "@/constants/emojis";
+import { MAX_MESSAGE_LENGTH } from "@/constants/messages";
+import { isUuid } from "@/utils/validation";
 
 const supabase = createClient();
 
@@ -21,6 +22,7 @@ const MESSAGE_COLUMNS = [
   "attachment_size",
   "attachment_mime_type",
   "gif_id",
+  "mentions",
 ].join(", ");
 
 /* -------------------- SHARED HELPERS -------------------- */
@@ -146,10 +148,6 @@ export async function getConversations() {
   return (await rpc("get_conversation_summaries")) ?? [];
 }
 
-export async function getGroupSummaries() {
-  return (await rpc("get_group_summaries")) ?? [];
-}
-
 /* -------------------- MESSAGE RETRIEVAL -------------------- */
 
 export async function getMessages(conversationId) {
@@ -256,4 +254,36 @@ export function subscribeToReadReceipts(
     onReceipt,
     onStatus
   );
+}
+
+/* -------------------- CONVERSATION MEMBERS -------------------- */
+
+export async function getConversationMembers(
+  conversationId,
+  signal
+) {
+  if (!isUuid(conversationId)) {
+    throw new Error("Invalid conversation ID");
+  }
+
+  let query = supabase
+    .from("conversation_members")
+    .select(`
+      user_id,
+      joined_at,
+      last_read_at,
+      profile:profiles!conversation_members_user_id_fkey (
+        id,
+        username,
+        display_name,
+        avatar_url
+      )
+    `)
+    .eq("conversation_id", conversationId);
+
+  if (signal) {
+    query = query.abortSignal(signal);
+  }
+
+  return (await execute(query)) ?? [];
 }

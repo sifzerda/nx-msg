@@ -1,12 +1,6 @@
-// src/components/__tests__/Header.test.jsx
-
-// guests see Login/Register, 
-// auth users see Messages/Contacts
-// logout clears app state
+// src/__tests__/Header.test.jsx
 
 /** @jest-environment jsdom */
-
-// src/__tests__/Header.test.jsx
 
 import {
   jest,
@@ -29,62 +23,35 @@ import {
 
 /* -------------------- MOCKS -------------------- */
 
-const mockPush = jest.fn();
-const mockReplace = jest.fn();
-const mockRefresh = jest.fn();
-const mockBack = jest.fn();
-const mockForward = jest.fn();
-const mockPrefetch = jest.fn();
-
 const mockLogout = jest.fn();
+const mockRedirect = jest.fn();
 
 let mockPathname = "/messages";
 
-const mockRouter = {
-  push: mockPush,
-  replace: mockReplace,
-  refresh: mockRefresh,
-  back: mockBack,
-  forward: mockForward,
-  prefetch: mockPrefetch,
-};
-
-/* -------------------- NEXT NAVIGATION -------------------- */
-
 jest.doMock("next/navigation", () => ({
   usePathname: () => mockPathname,
-  useRouter: () => mockRouter,
 }));
-
-/* -------------------- NEXT LINK -------------------- */
 
 jest.doMock("next/link", () => ({
   __esModule: true,
 
-  default: function MockLink({
-    children,
-    href,
-    ...props
-  }) {
-    return (
-      <a href={href} {...props}>
-        {children}
-      </a>
-    );
+  default: function MockLink(props) {
+    const anchorProps = { ...props };
+
+    delete anchorProps.prefetch;
+
+    return <a {...anchorProps} />;
   },
 }));
 
-/* -------------------- LOGOUT SERVICE -------------------- */
-
 jest.doMock("@/lib/logout", () => ({
   logout: mockLogout,
+  redirectAfterLogout: mockRedirect,
 }));
-
-/* -------------------- LOAD COMPONENT -------------------- */
 
 const Header = require("@/components/Header").default;
 
-/* -------------------- TEST DATA -------------------- */
+/* -------------------- DATA -------------------- */
 
 const USER = {
   id: "user-123",
@@ -97,10 +64,25 @@ const LOGOUT_SUCCESS = {
   pushCleanupError: null,
 };
 
+const AUTH_LINKS = [
+  ["Messages", "/messages"],
+  ["Contacts", "/contacts"],
+  ["Settings", "/settings"],
+];
+
+const GUEST_LINKS = [
+  ["Login", "/login"],
+  ["Register", "/register"],
+];
+
 /* -------------------- HELPERS -------------------- */
 
 function setup(props = {}) {
   return render(<Header {...props} />);
+}
+
+function setupAuthenticated() {
+  return setup({ user: USER });
 }
 
 function getNavigation() {
@@ -110,10 +92,15 @@ function getNavigation() {
 }
 
 function getNavLink(name) {
-  return within(getNavigation()).getByRole(
-    "link",
-    { name }
-  );
+  return within(getNavigation()).getByRole("link", {
+    name,
+  });
+}
+
+function queryNavLink(name) {
+  return within(getNavigation()).queryByRole("link", {
+    name,
+  });
 }
 
 function getLogoutButton() {
@@ -141,30 +128,34 @@ function deferred() {
     reject = rej;
   });
 
-  return {
-    promise,
-    resolve,
-    reject,
-  };
+  return { promise, resolve, reject };
+}
+
+async function expectRedirect() {
+  await waitFor(() => {
+    expect(mockRedirect).toHaveBeenCalledTimes(1);
+  });
+}
+
+async function expectLogoutError(message) {
+  const alert = await screen.findByRole("alert");
+
+  expect(alert).toHaveTextContent(message);
+
+  return alert;
 }
 
 /* -------------------- SETUP -------------------- */
 
-let alertSpy;
 let errorSpy;
 let warnSpy;
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  jest.resetAllMocks();
 
   mockPathname = "/messages";
 
-  mockLogout.mockReset();
   mockLogout.mockResolvedValue(LOGOUT_SUCCESS);
-
-  alertSpy = jest
-    .spyOn(window, "alert")
-    .mockImplementation(() => {});
 
   errorSpy = jest
     .spyOn(console, "error")
@@ -178,7 +169,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
 
-  alertSpy.mockRestore();
   errorSpy.mockRestore();
   warnSpy.mockRestore();
 });
@@ -186,45 +176,28 @@ afterEach(() => {
 /* -------------------- GUEST NAVIGATION -------------------- */
 
 describe("Header - guest navigation", () => {
-  test("displays the Login link", () => {
-    setup();
+  test.each(GUEST_LINKS)(
+    "displays the %s link",
+    (name, href) => {
+      setup();
 
-    expect(
-      getNavLink("Login")
-    ).toHaveAttribute("href", "/login");
-  });
+      expect(getNavLink(name)).toHaveAttribute(
+        "href",
+        href
+      );
+    }
+  );
 
-  test("displays the Register link", () => {
-    setup();
+  test.each(AUTH_LINKS)(
+    "does not display the %s link",
+    (name) => {
+      setup();
 
-    expect(
-      getNavLink("Register")
-    ).toHaveAttribute("href", "/register");
-  });
-
-  test("does not display authenticated navigation", () => {
-    setup();
-
-    const navigation = within(getNavigation());
-
-    expect(
-      navigation.queryByRole("link", {
-        name: "Messages",
-      })
-    ).not.toBeInTheDocument();
-
-    expect(
-      navigation.queryByRole("link", {
-        name: "Contacts",
-      })
-    ).not.toBeInTheDocument();
-
-    expect(
-      navigation.queryByRole("link", {
-        name: "Settings",
-      })
-    ).not.toBeInTheDocument();
-  });
+      expect(
+        queryNavLink(name)
+      ).not.toBeInTheDocument();
+    }
+  );
 
   test("does not display a logout button", () => {
     setup();
@@ -247,87 +220,48 @@ describe("Header - guest navigation", () => {
   });
 
   test("treats a null user as logged out", () => {
-    setup({
-      user: null,
-    });
+    setup({ user: null });
 
-    expect(
-      getNavLink("Login")
-    ).toBeInTheDocument();
-
-    expect(
-      getNavLink("Register")
-    ).toBeInTheDocument();
+    for (const [name] of GUEST_LINKS) {
+      expect(getNavLink(name)).toBeInTheDocument();
+    }
   });
 });
 
 /* -------------------- AUTHENTICATED NAVIGATION -------------------- */
 
 describe("Header - authenticated navigation", () => {
-  test("displays the Messages link", () => {
-    setup({
-      user: USER,
-    });
+  test.each(AUTH_LINKS)(
+    "displays the %s link",
+    (name, href) => {
+      setupAuthenticated();
 
-    expect(
-      getNavLink("Messages")
-    ).toHaveAttribute("href", "/messages");
-  });
+      expect(getNavLink(name)).toHaveAttribute(
+        "href",
+        href
+      );
+    }
+  );
 
-  test("displays the Contacts link", () => {
-    setup({
-      user: USER,
-    });
+  test.each(GUEST_LINKS)(
+    "does not display the %s link",
+    (name) => {
+      setupAuthenticated();
 
-    expect(
-      getNavLink("Contacts")
-    ).toHaveAttribute("href", "/contacts");
-  });
-
-  test("displays the Settings link", () => {
-    setup({
-      user: USER,
-    });
-
-    expect(
-      getNavLink("Settings")
-    ).toHaveAttribute("href", "/settings");
-  });
-
-  test("does not display guest navigation", () => {
-    setup({
-      user: USER,
-    });
-
-    const navigation = within(getNavigation());
-
-    expect(
-      navigation.queryByRole("link", {
-        name: "Login",
-      })
-    ).not.toBeInTheDocument();
-
-    expect(
-      navigation.queryByRole("link", {
-        name: "Register",
-      })
-    ).not.toBeInTheDocument();
-  });
+      expect(
+        queryNavLink(name)
+      ).not.toBeInTheDocument();
+    }
+  );
 
   test("displays the logout button", () => {
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
-    expect(
-      getLogoutButton()
-    ).toBeInTheDocument();
+    expect(getLogoutButton()).toBeInTheDocument();
   });
 
   test("links the Messenger logo to Messages", () => {
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
     expect(
       screen.getByRole("link", {
@@ -337,9 +271,7 @@ describe("Header - authenticated navigation", () => {
   });
 
   test("does not display obsolete notification controls", () => {
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
     expect(
       screen.queryByRole("button", {
@@ -359,23 +291,17 @@ describe("Header - authenticated navigation", () => {
 
 describe("Header - user information", () => {
   test("displays the user's display name", () => {
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
-    expect(
-      screen.getByText("Alex")
-    ).toBeInTheDocument();
+    expect(screen.getByText("Alex"))
+      .toBeInTheDocument();
   });
 
   test("displays the username with an @ prefix", () => {
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
-    expect(
-      screen.getByText("@alex")
-    ).toBeInTheDocument();
+    expect(screen.getByText("@alex"))
+      .toBeInTheDocument();
   });
 
   test.each([null, undefined, ""])(
@@ -388,9 +314,8 @@ describe("Header - user information", () => {
         },
       });
 
-      expect(
-        screen.getByText("User")
-      ).toBeInTheDocument();
+      expect(screen.getByText("User"))
+        .toBeInTheDocument();
     }
   );
 
@@ -404,28 +329,23 @@ describe("Header - user information", () => {
         },
       });
 
-      expect(
-        screen.getByText("@unknown")
-      ).toBeInTheDocument();
+      expect(screen.getByText("@unknown"))
+        .toBeInTheDocument();
     }
   );
 
   test("does not display user information for guests", () => {
     setup();
 
-    expect(
-      screen.queryByText("@unknown")
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("@unknown"))
+      .not.toBeInTheDocument();
 
-    expect(
-      screen.queryByText("User")
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("User"))
+      .not.toBeInTheDocument();
   });
 
   test("updates when the user changes", () => {
-    const { rerender } = setup({
-      user: USER,
-    });
+    const { rerender } = setupAuthenticated();
 
     rerender(
       <Header
@@ -437,17 +357,14 @@ describe("Header - user information", () => {
       />
     );
 
-    expect(
-      screen.getByText("Jamie")
-    ).toBeInTheDocument();
+    expect(screen.getByText("Jamie"))
+      .toBeInTheDocument();
 
-    expect(
-      screen.getByText("@jamie")
-    ).toBeInTheDocument();
+    expect(screen.getByText("@jamie"))
+      .toBeInTheDocument();
 
-    expect(
-      screen.queryByText("@alex")
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("@alex"))
+      .not.toBeInTheDocument();
   });
 });
 
@@ -467,59 +384,40 @@ describe("Header - active navigation", () => {
     (pathname, label) => {
       mockPathname = pathname;
 
-      setup({
-        user: USER,
-      });
+      setupAuthenticated();
 
-      expect(
-        getNavLink(label)
-      ).toHaveAttribute(
+      expect(getNavLink(label)).toHaveAttribute(
         "aria-current",
         "page"
       );
     }
   );
 
+  test.each([
+    "/messages-archive",
+    "/unknown-page",
+  ])(
+    "does not mark unrelated route %s as active",
+    (pathname) => {
+      mockPathname = pathname;
+
+      setupAuthenticated();
+
+      expect(
+        getNavigation().querySelector(
+          '[aria-current="page"]'
+        )
+      ).toBeNull();
+    }
+  );
+
   test("does not mark unrelated links as active", () => {
-    mockPathname = "/messages";
+    setupAuthenticated();
 
-    setup({
-      user: USER,
-    });
-
-    expect(
-      getNavLink("Contacts")
-    ).not.toHaveAttribute("aria-current");
-
-    expect(
-      getNavLink("Settings")
-    ).not.toHaveAttribute("aria-current");
-  });
-
-  test("does not incorrectly match similar route names", () => {
-    mockPathname = "/messages-archive";
-
-    setup({
-      user: USER,
-    });
-
-    expect(
-      getNavLink("Messages")
-    ).not.toHaveAttribute("aria-current");
-  });
-
-  test("does not mark any link active on unrelated pages", () => {
-    mockPathname = "/unknown-page";
-
-    setup({
-      user: USER,
-    });
-
-    expect(
-      getNavigation().querySelector(
-        '[aria-current="page"]'
-      )
-    ).toBeNull();
+    for (const name of ["Contacts", "Settings"]) {
+      expect(getNavLink(name))
+        .not.toHaveAttribute("aria-current");
+    }
   });
 
   test.each([
@@ -532,9 +430,7 @@ describe("Header - active navigation", () => {
 
       setup();
 
-      expect(
-        getNavLink(label)
-      ).toHaveAttribute(
+      expect(getNavLink(label)).toHaveAttribute(
         "aria-current",
         "page"
       );
@@ -542,33 +438,24 @@ describe("Header - active navigation", () => {
   );
 
   test("updates active navigation when the pathname changes", () => {
-    const { rerender } = setup({
-      user: USER,
-    });
+    const { rerender } = setupAuthenticated();
 
-    expect(
-      getNavLink("Messages")
-    ).toHaveAttribute(
+    expect(getNavLink("Messages")).toHaveAttribute(
       "aria-current",
       "page"
     );
 
     mockPathname = "/settings";
 
-    rerender(
-      <Header user={USER} />
-    );
+    rerender(<Header user={USER} />);
 
-    expect(
-      getNavLink("Settings")
-    ).toHaveAttribute(
+    expect(getNavLink("Settings")).toHaveAttribute(
       "aria-current",
       "page"
     );
 
-    expect(
-      getNavLink("Messages")
-    ).not.toHaveAttribute("aria-current");
+    expect(getNavLink("Messages"))
+      .not.toHaveAttribute("aria-current");
   });
 });
 
@@ -578,43 +465,28 @@ describe("Header - authentication transitions", () => {
   test("updates navigation after login", () => {
     const { rerender } = setup();
 
-    rerender(
-      <Header user={USER} />
-    );
+    rerender(<Header user={USER} />);
 
-    expect(
-      getNavLink("Messages")
-    ).toBeInTheDocument();
+    expect(getNavLink("Messages"))
+      .toBeInTheDocument();
 
-    expect(
-      getNavLink("Settings")
-    ).toBeInTheDocument();
+    expect(getNavLink("Settings"))
+      .toBeInTheDocument();
 
-    expect(
-      screen.queryByRole("link", {
-        name: "Login",
-      })
-    ).not.toBeInTheDocument();
+    expect(queryNavLink("Login"))
+      .not.toBeInTheDocument();
   });
 
   test("updates navigation after logout", () => {
-    const { rerender } = setup({
-      user: USER,
-    });
+    const { rerender } = setupAuthenticated();
 
-    rerender(
-      <Header user={null} />
-    );
+    rerender(<Header user={null} />);
 
-    expect(
-      getNavLink("Login")
-    ).toBeInTheDocument();
+    expect(getNavLink("Login"))
+      .toBeInTheDocument();
 
-    expect(
-      screen.queryByRole("link", {
-        name: "Messages",
-      })
-    ).not.toBeInTheDocument();
+    expect(queryNavLink("Messages"))
+      .not.toBeInTheDocument();
 
     expect(
       screen.queryByRole("button", {
@@ -627,243 +499,151 @@ describe("Header - authentication transitions", () => {
 /* -------------------- LOGOUT SUCCESS -------------------- */
 
 describe("Header - successful logout", () => {
-  test("does not initiate logout on mount", () => {
-    setup({
-      user: USER,
-    });
-
-    expect(mockLogout).not.toHaveBeenCalled();
-  });
-
-  test("calls the centralised logout service", async () => {
-    setup({
-      user: USER,
-    });
+  test("calls the centralised logout service once", async () => {
+    setupAuthenticated();
 
     clickLogout();
 
-    await waitFor(() => {
-      expect(mockLogout).toHaveBeenCalledTimes(1);
+    await expectRedirect();
 
-      expect(mockReplace).toHaveBeenCalledWith(
-        "/login"
-      );
-    });
+    expect(mockLogout).toHaveBeenCalledTimes(1);
   });
 
-  test("replaces the current route with Login", async () => {
-    setup({
-      user: USER,
-    });
+  test("redirects after logout", async () => {
+    setupAuthenticated();
 
     clickLogout();
 
-    await waitFor(() => {
-      expect(mockReplace).toHaveBeenCalledWith(
-        "/login"
-      );
-    });
-
-    expect(mockPush).not.toHaveBeenCalled();
-  });
-
-  test("refreshes the router after logout", async () => {
-    setup({
-      user: USER,
-    });
-
-    clickLogout();
-
-    await waitFor(() => {
-      expect(mockRefresh).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  test("replaces the route before refreshing", async () => {
-    setup({
-      user: USER,
-    });
-
-    clickLogout();
-
-    await waitFor(() => {
-      expect(mockRefresh).toHaveBeenCalled();
-    });
+    await expectRedirect();
 
     expect(
-      mockReplace.mock.invocationCallOrder[0]
+      mockLogout.mock.invocationCallOrder[0]
     ).toBeLessThan(
-      mockRefresh.mock.invocationCallOrder[0]
+      mockRedirect.mock.invocationCallOrder[0]
     );
   });
 
   test("does not display an error after successful logout", async () => {
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
     clickLogout();
 
-    await waitFor(() => {
-      expect(mockRefresh).toHaveBeenCalled();
-    });
+    await expectRedirect();
 
-    expect(alertSpy).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert"))
+      .not.toBeInTheDocument();
+
     expect(errorSpy).not.toHaveBeenCalled();
     expect(warnSpy).not.toHaveBeenCalled();
   });
+
+  test("keeps the logout button disabled until navigation", async () => {
+    setupAuthenticated();
+
+    clickLogout();
+
+    await expectRedirect();
+
+    expect(getLoadingButton()).toBeDisabled();
+
+    expect(getLoadingButton()).toHaveAttribute(
+      "aria-busy",
+      "true"
+    );
+  });
 });
 
-/* -------------------- LOGOUT LOADING STATE -------------------- */
+/* -------------------- LOGOUT LOADING -------------------- */
 
 describe("Header - logout loading state", () => {
   test("starts with an enabled logout button", () => {
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
-    expect(
-      getLogoutButton()
-    ).toBeEnabled();
+    expect(getLogoutButton()).toBeEnabled();
 
-    expect(
-      getLogoutButton()
-    ).toHaveAttribute(
+    expect(getLogoutButton()).toHaveAttribute(
       "aria-busy",
       "false"
     );
   });
 
-  test("disables the button while logging out", async () => {
+  test("displays the pending logout state", async () => {
     const request = deferred();
 
-    mockLogout.mockReturnValueOnce(
-      request.promise
-    );
+    mockLogout.mockReturnValueOnce(request.promise);
 
-    setup({
-      user: USER,
-    });
-
-    clickLogout();
-
-    try {
-      expect(
-        getLoadingButton()
-      ).toBeDisabled();
-    } finally {
-      await act(async () => {
-        request.resolve(LOGOUT_SUCCESS);
-        await request.promise;
-      });
-    }
-  });
-
-  test("marks the logout button as busy", async () => {
-    const request = deferred();
-
-    mockLogout.mockReturnValueOnce(
-      request.promise
-    );
-
-    setup({
-      user: USER,
-    });
-
-    clickLogout();
-
-    try {
-      expect(
-        getLoadingButton()
-      ).toHaveAttribute(
-        "aria-busy",
-        "true"
-      );
-    } finally {
-      await act(async () => {
-        request.resolve(LOGOUT_SUCCESS);
-        await request.promise;
-      });
-    }
-  });
-
-  test("displays the logging out message", async () => {
-    const request = deferred();
-
-    mockLogout.mockReturnValueOnce(
-      request.promise
-    );
-
-    setup({
-      user: USER,
-    });
-
-    clickLogout();
-
-    try {
-      expect(
-        screen.getByText("Logging out...")
-      ).toBeInTheDocument();
-
-      expect(
-        getLoadingButton()
-      ).toHaveAttribute(
-        "title",
-        "Logging out..."
-      );
-    } finally {
-      await act(async () => {
-        request.resolve(LOGOUT_SUCCESS);
-        await request.promise;
-      });
-    }
-  });
-
-  test("prevents duplicate logout requests while pending", async () => {
-    const request = deferred();
-
-    mockLogout.mockReturnValueOnce(
-      request.promise
-    );
-
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
     clickLogout();
 
     try {
       const button = getLoadingButton();
 
-      fireEvent.click(button);
-      fireEvent.click(button);
-      fireEvent.click(button);
+      expect(button).toBeDisabled();
 
-      expect(mockLogout).toHaveBeenCalledTimes(1);
+      expect(button).toHaveAttribute(
+        "aria-busy",
+        "true"
+      );
+
+      expect(button).toHaveAttribute(
+        "title",
+        "Logging out..."
+      );
+
+      expect(screen.getByText("Logging out..."))
+        .toBeInTheDocument();
+
+      expect(mockRedirect).not.toHaveBeenCalled();
     } finally {
       await act(async () => {
         request.resolve(LOGOUT_SUCCESS);
         await request.promise;
       });
     }
+
+    await expectRedirect();
+  });
+
+  test("prevents duplicate logout requests while pending", async () => {
+    const request = deferred();
+
+    mockLogout.mockReturnValueOnce(request.promise);
+
+    setupAuthenticated();
+
+    clickLogout();
+
+    try {
+      const button = getLoadingButton();
+
+      for (let index = 0; index < 3; index++) {
+        fireEvent.click(button);
+      }
+
+      expect(mockLogout).toHaveBeenCalledTimes(1);
+      expect(mockRedirect).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        request.resolve(LOGOUT_SUCCESS);
+        await request.promise;
+      });
+    }
+
+    await expectRedirect();
   });
 
   test("does not navigate before logout completes", async () => {
     const request = deferred();
 
-    mockLogout.mockReturnValueOnce(
-      request.promise
-    );
+    mockLogout.mockReturnValueOnce(request.promise);
 
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
     clickLogout();
 
     try {
-      expect(mockReplace).not.toHaveBeenCalled();
-      expect(mockRefresh).not.toHaveBeenCalled();
+      expect(mockRedirect).not.toHaveBeenCalled();
     } finally {
       await act(async () => {
         request.resolve(LOGOUT_SUCCESS);
@@ -871,73 +651,40 @@ describe("Header - logout loading state", () => {
       });
     }
 
-    expect(mockReplace).toHaveBeenCalledWith(
-      "/login"
-    );
-  });
-
-  test("clears the loading state after completion", async () => {
-    setup({
-      user: USER,
-    });
-
-    clickLogout();
-
-    await waitFor(() => {
-      expect(
-        getLogoutButton()
-      ).toBeEnabled();
-
-      expect(
-        getLogoutButton()
-      ).toHaveAttribute(
-        "aria-busy",
-        "false"
-      );
-    });
+    await expectRedirect();
   });
 });
 
 /* -------------------- LOGOUT FAILURE -------------------- */
 
 describe("Header - logout failure", () => {
-  test("displays the logout error message", async () => {
+  test("displays the logout error inline", async () => {
     mockLogout.mockRejectedValueOnce(
       new Error("Signout failed")
     );
 
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
     clickLogout();
 
-    await waitFor(() => {
-      expect(alertSpy).toHaveBeenCalledWith(
-        "Signout failed"
-      );
-    });
+    await expectLogoutError("Signout failed");
   });
 
   test("logs the logout error", async () => {
-    const error = new Error(
-      "Signout failed"
-    );
+    const error = new Error("Signout failed");
 
     mockLogout.mockRejectedValueOnce(error);
 
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
     clickLogout();
 
-    await waitFor(() => {
-      expect(errorSpy).toHaveBeenCalledWith(
-        "Logout failed:",
-        error
-      );
-    });
+    await expectLogoutError(error.message);
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Logout failed:",
+      error
+    );
   });
 
   test("does not navigate after logout failure", async () => {
@@ -945,19 +692,13 @@ describe("Header - logout failure", () => {
       new Error("Signout failed")
     );
 
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
     clickLogout();
 
-    await waitFor(() => {
-      expect(alertSpy).toHaveBeenCalled();
-    });
+    await expectLogoutError("Signout failed");
 
-    expect(mockReplace).not.toHaveBeenCalled();
-    expect(mockPush).not.toHaveBeenCalled();
-    expect(mockRefresh).not.toHaveBeenCalled();
+    expect(mockRedirect).not.toHaveBeenCalled();
   });
 
   test("uses a fallback error message when necessary", async () => {
@@ -965,17 +706,11 @@ describe("Header - logout failure", () => {
       new Error("")
     );
 
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
     clickLogout();
 
-    await waitFor(() => {
-      expect(alertSpy).toHaveBeenCalledWith(
-        "Could not log out"
-      );
-    });
+    await expectLogoutError("Could not log out.");
   });
 
   test("re-enables the logout button after failure", async () => {
@@ -983,24 +718,18 @@ describe("Header - logout failure", () => {
       new Error("Signout failed")
     );
 
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
     clickLogout();
 
-    await waitFor(() => {
-      expect(
-        getLogoutButton()
-      ).toBeEnabled();
+    await expectLogoutError("Signout failed");
 
-      expect(
-        getLogoutButton()
-      ).toHaveAttribute(
-        "aria-busy",
-        "false"
-      );
-    });
+    expect(getLogoutButton()).toBeEnabled();
+
+    expect(getLogoutButton()).toHaveAttribute(
+      "aria-busy",
+      "false"
+    );
   });
 
   test("allows retrying a failed logout", async () => {
@@ -1008,33 +737,24 @@ describe("Header - logout failure", () => {
       .mockRejectedValueOnce(
         new Error("Signout failed")
       )
-      .mockResolvedValueOnce(
-        LOGOUT_SUCCESS
-      );
+      .mockResolvedValueOnce(LOGOUT_SUCCESS);
 
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
     clickLogout();
 
-    await waitFor(() => {
-      expect(alertSpy).toHaveBeenCalled();
+    await expectLogoutError("Signout failed");
 
-      expect(
-        getLogoutButton()
-      ).toBeEnabled();
-    });
+    expect(getLogoutButton()).toBeEnabled();
 
     clickLogout();
 
-    await waitFor(() => {
-      expect(mockLogout).toHaveBeenCalledTimes(2);
+    await expectRedirect();
 
-      expect(mockReplace).toHaveBeenCalledWith(
-        "/login"
-      );
-    });
+    expect(mockLogout).toHaveBeenCalledTimes(2);
+
+    expect(screen.queryByRole("alert"))
+      .not.toBeInTheDocument();
   });
 });
 
@@ -1053,71 +773,45 @@ describe("Header - push cleanup warnings", () => {
   });
 
   test("logs a warning when push cleanup fails", async () => {
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
     clickLogout();
 
-    await waitFor(() => {
-      expect(warnSpy).toHaveBeenCalledWith(
-        "Logout completed, but push cleanup had an error:",
-        cleanupError
-      );
-    });
+    await expectRedirect();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Push cleanup failed:",
+      cleanupError
+    );
   });
 
-  test("still redirects to Login", async () => {
-    setup({
-      user: USER,
-    });
+  test("still redirects after push cleanup failure", async () => {
+    setupAuthenticated();
 
     clickLogout();
 
-    await waitFor(() => {
-      expect(mockReplace).toHaveBeenCalledWith(
-        "/login"
-      );
-    });
-  });
-
-  test("still refreshes the router", async () => {
-    setup({
-      user: USER,
-    });
-
-    clickLogout();
-
-    await waitFor(() => {
-      expect(mockRefresh).toHaveBeenCalledTimes(1);
-    });
+    await expectRedirect();
   });
 
   test("does not treat push cleanup failure as logout failure", async () => {
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
     clickLogout();
 
-    await waitFor(() => {
-      expect(mockRefresh).toHaveBeenCalled();
-    });
+    await expectRedirect();
 
-    expect(alertSpy).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert"))
+      .not.toBeInTheDocument();
+
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
   test("does not retry logout because push cleanup failed", async () => {
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
     clickLogout();
 
-    await waitFor(() => {
-      expect(mockRefresh).toHaveBeenCalled();
-    });
+    await expectRedirect();
 
     expect(mockLogout).toHaveBeenCalledTimes(1);
   });
@@ -1129,75 +823,51 @@ describe("Header - accessibility", () => {
   test("renders a banner landmark", () => {
     setup();
 
-    expect(
-      screen.getByRole("banner")
-    ).toBeInTheDocument();
+    expect(screen.getByRole("banner"))
+      .toBeInTheDocument();
   });
 
   test("provides a named navigation landmark", () => {
     setup();
 
-    expect(
-      getNavigation()
-    ).toBeInTheDocument();
+    expect(getNavigation()).toBeInTheDocument();
   });
 
-  test("provides accessible names for authenticated links", () => {
-    setup({
-      user: USER,
-    });
+  test.each(AUTH_LINKS)(
+    "provides an accessible name and tooltip for %s",
+    (name) => {
+      setupAuthenticated();
 
-    for (const name of [
-      "Messages",
-      "Contacts",
-      "Settings",
-    ]) {
-      expect(
-        getNavLink(name)
-      ).toHaveAccessibleName(name);
+      const link = getNavLink(name);
+
+      expect(link).toHaveAccessibleName(name);
+      expect(link).toHaveAttribute("title", name);
     }
-  });
+  );
 
   test("provides an accessible logout button", () => {
-    setup({
-      user: USER,
-    });
+    setupAuthenticated();
 
-    expect(
-      getLogoutButton()
-    ).toHaveAccessibleName("Log out");
-  });
-
-  test("provides navigation tooltips", () => {
-    setup({
-      user: USER,
-    });
-
-    for (const name of [
-      "Messages",
-      "Contacts",
-      "Settings",
-    ]) {
-      expect(
-        getNavLink(name)
-      ).toHaveAttribute("title", name);
-    }
+    expect(getLogoutButton())
+      .toHaveAccessibleName("Log out");
   });
 });
 
 /* -------------------- REQUEST EFFICIENCY -------------------- */
 
 describe("Header - request efficiency", () => {
-  test("does not call logout when rendering a guest", () => {
-    setup();
+  test.each([null, USER])(
+    "does not initiate logout or navigation on mount",
+    (user) => {
+      setup({ user });
 
-    expect(mockLogout).not.toHaveBeenCalled();
-  });
+      expect(mockLogout).not.toHaveBeenCalled();
+      expect(mockRedirect).not.toHaveBeenCalled();
+    }
+  );
 
-  test("does not call logout when the user changes", () => {
-    const { rerender } = setup({
-      user: USER,
-    });
+  test("does not initiate logout when the user changes", () => {
+    const { rerender } = setupAuthenticated();
 
     rerender(
       <Header
@@ -1209,29 +879,17 @@ describe("Header - request efficiency", () => {
     );
 
     expect(mockLogout).not.toHaveBeenCalled();
+    expect(mockRedirect).not.toHaveBeenCalled();
   });
 
-  test("does not call logout when the route changes", () => {
-    const { rerender } = setup({
-      user: USER,
-    });
+  test("does not initiate logout when the route changes", () => {
+    const { rerender } = setupAuthenticated();
 
     mockPathname = "/contacts";
 
-    rerender(
-      <Header user={USER} />
-    );
+    rerender(<Header user={USER} />);
 
     expect(mockLogout).not.toHaveBeenCalled();
-  });
-
-  test("does not navigate or refresh automatically on mount", () => {
-    setup({
-      user: USER,
-    });
-
-    expect(mockPush).not.toHaveBeenCalled();
-    expect(mockReplace).not.toHaveBeenCalled();
-    expect(mockRefresh).not.toHaveBeenCalled();
+    expect(mockRedirect).not.toHaveBeenCalled();
   });
 });

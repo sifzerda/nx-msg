@@ -26,7 +26,7 @@ const EMBED_HOSTNAMES = new Set([
 
 /* -------------------- VALIDATION -------------------- */
 
-export function isValidYouTubeVideoId(value) {
+function isValidYouTubeVideoId(value) {
   return (
     typeof value === "string" &&
     YOUTUBE_VIDEO_ID_PATTERN.test(value)
@@ -105,7 +105,7 @@ export function getYouTubeVideoId(value) {
 
 /* -------------------- URL CLASSIFICATION -------------------- */
 
-export function getYouTubeUrlType(value) {
+function getYouTubeUrlType(value) {
   const parsed = parseYouTubeUrl(value);
 
   if (!parsed) return null;

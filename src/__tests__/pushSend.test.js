@@ -3,28 +3,57 @@
 // src/__tests__/pushSend.test.js
 
 import {
+  jest,
   describe,
   test,
   expect,
-  jest,
   beforeEach,
   afterEach,
 } from "@jest/globals";
 
+/* -------------------- MOCKS -------------------- */
+
+const mockRpc = jest.fn();
+const mockFrom = jest.fn();
+const mockDelete = jest.fn();
+const mockIn = jest.fn();
+
+const mockSendWebPush = jest.fn();
+const mockIsValidPushEndpoint = jest.fn();
+const mockCreateAdminClient = jest.fn();
+
+jest.doMock("@/lib/supabase/admin", () => ({
+  createAdminClient: mockCreateAdminClient,
+}));
+
+jest.doMock("@/lib/webPush", () => ({
+  sendWebPush: mockSendWebPush,
+  isValidPushEndpoint: mockIsValidPushEndpoint,
+}));
+
+const { POST } = require("@/app/api/push/send/route");
+
 /* -------------------- CONSTANTS -------------------- */
 
-const WEBHOOK_SECRET = "test-webhook-secret";
-const MESSAGE_ID = "11111111-1111-4111-8111-111111111111";
-const CONVERSATION_ID = "22222222-2222-4222-8222-222222222222";
-const SENDER_ID = "33333333-3333-4333-8333-333333333333";
-const SUBSCRIPTION_ID = "44444444-4444-4444-8444-444444444444";
-const SECOND_SUBSCRIPTION_ID = "55555555-5555-4555-8555-555555555555";
+const SECRET = "test-webhook-secret";
+
+const ORIGINAL_SECRET =
+  process.env.PUSH_WEBHOOK_SECRET;
+
+const MESSAGE_ID =
+  "11111111-1111-4111-8111-111111111111";
+
+const CONVERSATION_ID =
+  "22222222-2222-4222-8222-222222222222";
+
+const SENDER_ID =
+  "33333333-3333-4333-8333-333333333333";
 
 const MESSAGE = {
   id: MESSAGE_ID,
   conversation_id: CONVERSATION_ID,
   sender_id: SENDER_ID,
-  content: "Hello there",
+  content: "Hello everyone",
   gif_id: null,
   attachment_type: null,
   attachment_name: null,
@@ -35,93 +64,60 @@ const SENDER = {
   username: "alex",
 };
 
-const SUBSCRIPTION = {
-  id: SUBSCRIPTION_ID,
-  endpoint: "https://push.example.com/device-1",
-  p256dh: "test-public-key",
-  auth_key: "test-auth-key",
+const PRIVATE_CONVERSATION = {
+  type: "private",
+  name: null,
 };
 
-const SECOND_SUBSCRIPTION = {
-  id: SECOND_SUBSCRIPTION_ID,
-  endpoint: "https://push.example.com/device-2",
-  p256dh: "second-public-key",
-  auth_key: "second-auth-key",
+const GROUP_CONVERSATION = {
+  type: "group",
+  name: "Music Group",
 };
 
-/* -------------------- SUPABASE MOCKS -------------------- */
-
-const mockFrom = jest.fn();
-const mockRpc = jest.fn();
-
-const mockMessageSelect = jest.fn();
-const mockMessageEq = jest.fn();
-const mockMessageMaybeSingle = jest.fn();
-
-const mockProfileSelect = jest.fn();
-const mockProfileEq = jest.fn();
-const mockProfileMaybeSingle = jest.fn();
-
-const mockDelete = jest.fn();
-const mockDeleteIn = jest.fn();
-
-const mockAdmin = {
-  from: mockFrom,
-  rpc: mockRpc,
+const EVENT = {
+  type: "INSERT",
+  table: "messages",
+  schema: "public",
+  record: {
+    id: MESSAGE_ID,
+  },
 };
 
-const mockCreateAdminClient = jest.fn(() => mockAdmin);
+/* -------------------- FIXTURES -------------------- */
 
-jest.doMock("@/lib/supabase/admin", () => ({
-  createAdminClient: mockCreateAdminClient,
-}));
-
-/* -------------------- WEB PUSH MOCK -------------------- */
-
-const mockSendWebPush = jest.fn();
-
-jest.doMock("@/lib/webPush", () => ({
-  sendWebPush: mockSendWebPush,
-}));
-
-/* -------------------- PREVIEW MOCK -------------------- */
-
-const mockGetNotificationPreview = jest.fn();
-
-jest.doMock("@/utils/messageUtils", () => ({
-  getNotificationPreview:
-    mockGetNotificationPreview,
-}));
-
-/* -------------------- LOAD ROUTE -------------------- */
-
-const { POST } = require("@/app/api/push/send/route");
-
-/* -------------------- HELPERS -------------------- */
-
-let previousSecret;
-let errorSpy;
-let warnSpy;
-
-function createEvent(overrides = {}) {
+function createSubscription(index = 1, overrides = {}) {
   return {
-    type: "INSERT",
-    table: "messages",
-    schema: "public",
-
-    record: {
-      id: MESSAGE_ID,
-    },
-
+    id: `subscription-${index}`,
+    endpoint:
+      `https://fcm.googleapis.com/fcm/send/device-${index}`,
+    p256dh: `encryption-key-${index}`,
+    auth_key: `authentication-key-${index}`,
+    is_mentioned: false,
     ...overrides,
   };
 }
 
-function createRequest({
-  event = createEvent(),
-  authorization = `Bearer ${WEBHOOK_SECRET}`,
-  rawBody,
-} = {}) {
+function createDelivery(overrides = {}) {
+  return {
+    message: { ...MESSAGE },
+    sender: { ...SENDER },
+    conversation: { ...PRIVATE_CONVERSATION },
+    subscriptions: [createSubscription()],
+    ...overrides,
+  };
+}
+
+function setDelivery(overrides = {}) {
+  mockRpc.mockResolvedValue({
+    data: createDelivery(overrides),
+    error: null,
+  });
+}
+
+function createRequest(
+  payload = EVENT,
+  authorization = `Bearer ${SECRET}`
+) {
   const headers = {
     "Content-Type": "application/json",
   };
@@ -130,340 +126,296 @@ function createRequest({
     headers.Authorization = authorization;
   }
 
-  return new Request("http://localhost/api/push/send",
+  return new Request(
+    "http://localhost/api/push/send",
     {
       method: "POST",
       headers,
-      body:
-        rawBody !== undefined
-          ? rawBody
-          : JSON.stringify(event),
+      body: JSON.stringify(payload),
     }
   );
 }
 
-async function execute(options) {
-  const response = await POST(createRequest(options));
+async function execute(
+  payload = EVENT,
+  authorization = `Bearer ${SECRET}`
+) {
+  const response = await POST(
+    createRequest(payload, authorization)
+  );
 
   return {
     status: response.status,
-    body: await response.json(),
     headers: response.headers,
+    body: await response.json(),
   };
 }
 
+function getNotification(index = 0) {
+  const [, payload] =
+    mockSendWebPush.mock.calls[index];
+
+  return JSON.parse(payload);
+}
+
 function createPushError(statusCode) {
-  return Object.assign(new Error(`Push error ${statusCode}`), { statusCode });
+  return Object.assign(
+    new Error(`Push delivery failed: ${statusCode}`),
+    { statusCode }
+  );
 }
 
 function deferred() {
   let resolve;
-  let reject;
 
-  const promise = new Promise((res, rej) => {
+  const promise = new Promise((res) => {
     resolve = res;
-    reject = rej;
   });
 
-  return {
-    promise,
-    resolve,
-    reject,
-  };
-}
-
-async function flushPromises(count = 20) {
-  for (let index = 0; index < count; index++) {
-    await Promise.resolve();
-  }
+  return { promise, resolve };
 }
 
 /* -------------------- SETUP -------------------- */
 
+let errorSpy;
+
 beforeEach(() => {
   jest.resetAllMocks();
 
-  previousSecret = process.env.PUSH_WEBHOOK_SECRET;
-  process.env.PUSH_WEBHOOK_SECRET = WEBHOOK_SECRET;
+  process.env.PUSH_WEBHOOK_SECRET = SECRET;
 
-  mockCreateAdminClient.mockReturnValue(mockAdmin);
-
-  mockMessageSelect.mockReturnValue({
-    eq: mockMessageEq,
+  mockCreateAdminClient.mockReturnValue({
+    rpc: mockRpc,
+    from: mockFrom,
   });
 
-  mockMessageEq.mockReturnValue({
-    maybeSingle: mockMessageMaybeSingle,
-  });
-
-  mockMessageMaybeSingle.mockResolvedValue({
-    data: MESSAGE,
-    error: null,
-  });
-
-  mockProfileSelect.mockReturnValue({
-    eq: mockProfileEq,
-  });
-
-  mockProfileEq.mockReturnValue({
-    maybeSingle: mockProfileMaybeSingle,
-  });
-
-  mockProfileMaybeSingle.mockResolvedValue({
-    data: SENDER,
-    error: null,
+  mockFrom.mockReturnValue({
+    delete: mockDelete,
   });
 
   mockDelete.mockReturnValue({
-    in: mockDeleteIn,
+    in: mockIn,
   });
 
-  mockDeleteIn.mockResolvedValue({
+  mockIn.mockResolvedValue({
     error: null,
   });
 
-  mockFrom.mockImplementation((table) => {
-    if (table === "messages") {
-      return {
-        select: mockMessageSelect,
-      };
-    }
-
-    if (table === "profiles") {
-      return {
-        select: mockProfileSelect,
-      };
-    }
-
-    if (table === "push_subscriptions") {
-      return {
-        delete: mockDelete,
-      };
-    }
-
-    throw new Error(
-      `Unexpected table: ${table}`
-    );
+  mockSendWebPush.mockResolvedValue({
+    statusCode: 201,
   });
 
-  mockRpc.mockResolvedValue({
-    data: [SUBSCRIPTION],
-    error: null,
-  });
+  mockIsValidPushEndpoint.mockReturnValue(true);
 
-  mockSendWebPush.mockResolvedValue(undefined);
-  mockGetNotificationPreview.mockReturnValue("Hello there");
+  setDelivery();
 
   errorSpy = jest
     .spyOn(console, "error")
     .mockImplementation(() => {});
-
-  warnSpy = jest
-    .spyOn(console, "warn")
-    .mockImplementation(() => {});
 });
 
 afterEach(() => {
-  if (previousSecret === undefined) {
+  errorSpy.mockRestore();
+
+  if (ORIGINAL_SECRET === undefined) {
     delete process.env.PUSH_WEBHOOK_SECRET;
   } else {
-    process.env.PUSH_WEBHOOK_SECRET = previousSecret;
+    process.env.PUSH_WEBHOOK_SECRET =
+      ORIGINAL_SECRET;
   }
-
-  errorSpy.mockRestore();
-  warnSpy.mockRestore();
 });
 
-/* -------------------- WEBHOOK AUTHENTICATION -------------------- */
+/* -------------------- AUTHENTICATION -------------------- */
 
-describe("Webhook authentication", () => {
-  test("accepts the correct webhook secret", async () => {
-    const result = await execute();
-    expect(result.status).toBe(200);
-  });
-
-  test("rejects missing authorization", async () => {
-    const result = await execute({
-      authorization: null,
-    });
-
-    expect(result.status).toBe(401);
-    expect(mockCreateAdminClient).not.toHaveBeenCalled();
-  });
-
-  test("rejects an incorrect secret", async () => {
-    const result = await execute({
-      authorization: "Bearer incorrect-secret",
-    });
+describe("Push delivery - authentication", () => {
+  test.each([
+    null,
+    "",
+    "Basic credentials",
+    "Bearer",
+    "Bearer incorrect-secret",
+    "Bearer test-webhook-secrex",
+  ])("rejects invalid authorization %p", async (authorization) => {
+    const result = await execute(
+      EVENT,
+      authorization
+    );
 
     expect(result.status).toBe(401);
-  });
 
-  test("rejects an empty secret", async () => {
-    const result = await execute({
-      authorization: "Bearer ",
+    expect(result.body).toEqual({
+      error: "Unauthorized",
     });
 
-    expect(result.status).toBe(401);
-  });
+    expect(mockCreateAdminClient)
+      .not.toHaveBeenCalled();
 
-  test("rejects unsupported authentication schemes", async () => {
-    const result = await execute({
-      authorization: `Basic ${WEBHOOK_SECRET}`,
-    });
-
-    expect(result.status).toBe(401);
-  });
-
-  test("accepts case-insensitive Bearer authentication", async () => {
-    const result = await execute({
-      authorization: `bearer ${WEBHOOK_SECRET}`,
-    });
-
-    expect(result.status).toBe(200);
-  });
-
-  test("rejects secrets with different lengths", async () => {
-    const result = await execute({
-      authorization: "Bearer x",
-    });
-
-    expect(result.status).toBe(401);
-  });
-
-  test("rejects incorrect secrets with equal lengths", async () => {
-    const result = await execute({
-      authorization: `Bearer ${"x".repeat(WEBHOOK_SECRET.length)}`,
-    });
-
-    expect(result.status).toBe(401);
-  });
-
-  test("fails securely when the server secret is missing", async () => {
-    delete process.env.PUSH_WEBHOOK_SECRET;
-    const result = await execute();
-
-    expect(result.status).toBe(401);
-    expect(mockCreateAdminClient).not.toHaveBeenCalled();
-  });
-
-  test("does not access the database for unauthorized requests", async () => {
-    await execute({
-      authorization: "Bearer invalid",
-    });
-
-    expect(mockFrom).not.toHaveBeenCalled();
     expect(mockRpc).not.toHaveBeenCalled();
-    expect(mockSendWebPush).not.toHaveBeenCalled();
+
+    expect(mockSendWebPush)
+      .not.toHaveBeenCalled();
+  });
+
+  test("rejects missing server secret", async () => {
+    delete process.env.PUSH_WEBHOOK_SECRET;
+
+    const result = await execute();
+
+    expect(result.status).toBe(401);
+
+    expect(mockCreateAdminClient)
+      .not.toHaveBeenCalled();
+  });
+
+  test.each([
+    `Bearer ${SECRET}`,
+    `bearer ${SECRET}`,
+    `BEARER ${SECRET}`,
+  ])("accepts valid authorization %s", async (authorization) => {
+    const result = await execute(
+      EVENT,
+      authorization
+    );
+
+    expect(result.status).toBe(200);
+
+    expect(mockRpc).toHaveBeenCalledTimes(1);
   });
 });
 
 /* -------------------- EVENT VALIDATION -------------------- */
 
-describe("Webhook event validation", () => {
+describe("Push delivery - event validation", () => {
+  test.each([
+    null,
+    {},
+    { ...EVENT, type: "UPDATE" },
+    { ...EVENT, type: "DELETE" },
+    { ...EVENT, table: "profiles" },
+    { ...EVENT, schema: "private" },
+  ])("rejects invalid event %p", async (event) => {
+    const result = await execute(event);
+
+    expect(result.status).toBe(400);
+
+    expect(result.body).toEqual({
+      error: "Invalid event",
+    });
+
+    expect(mockCreateAdminClient)
+      .not.toHaveBeenCalled();
+  });
+
   test("rejects malformed JSON", async () => {
-    const result = await execute({
-      rawBody: "{invalid-json",
+    const request = new Request(
+      "http://localhost/api/push/send",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${SECRET}`,
+          "Content-Type": "application/json",
+        },
+        body: "{invalid-json",
+      }
+    );
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(400);
+
+    expect(await response.json()).toEqual({
+      error: "Invalid event",
     });
 
-    expect(result.status).toBe(400);
-  });
-
-  test("rejects a null event", async () => {
-    const result = await execute({
-      event: null,
-    });
-
-    expect(result.status).toBe(400);
-  });
-
-  test("rejects an empty event", async () => {
-    const result = await execute({
-      event: {},
-    });
-
-    expect(result.status).toBe(400);
+    expect(mockCreateAdminClient)
+      .not.toHaveBeenCalled();
   });
 
   test.each([
-    "UPDATE",
-    "DELETE",
-    "SELECT",
-  ])("rejects unsupported event type: %s", async (type) => {
+    undefined,
+    null,
+    "",
+    "invalid-id",
+    123,
+    {},
+  ])("rejects invalid message ID %p", async (id) => {
     const result = await execute({
-      event: createEvent({
-        type,
-      }),
+      ...EVENT,
+      record: { id },
     });
 
     expect(result.status).toBe(400);
-    expect(mockCreateAdminClient).not.toHaveBeenCalled();
-  });
 
-  test("rejects events from unrelated tables", async () => {
-    const result = await execute({
-      event: createEvent({
-        table: "profiles",
-      }),
+    expect(result.body).toEqual({
+      error: "Invalid message ID",
     });
 
-    expect(result.status).toBe(400);
-  });
-
-  test("rejects events from unrelated schemas", async () => {
-    const result = await execute({
-      event: createEvent({
-        schema: "private",
-      }),
-    });
-
-    expect(result.status).toBe(400);
+    expect(mockCreateAdminClient)
+      .not.toHaveBeenCalled();
   });
 
   test("rejects a missing record", async () => {
     const result = await execute({
-      event: createEvent({
-        record: null,
-      }),
+      ...EVENT,
+      record: undefined,
     });
 
     expect(result.status).toBe(400);
-  });
 
-  test.each([
-    null,
-    undefined,
-    "",
-    "invalid",
-    123,
-    {},
-    [],
-  ])("rejects invalid message ID: %p", async (id) => {
-    const result = await execute({
-      event: createEvent({
-        record: {
-          id,
-        },
-      }),
-    });
-
-    expect(result.status).toBe(400);
-    expect(mockCreateAdminClient).not.toHaveBeenCalled();
+    expect(result.body.error)
+      .toBe("Invalid message ID");
   });
 });
 
-/* -------------------- MESSAGE RETRIEVAL -------------------- */
+/* -------------------- DATABASE -------------------- */
 
-describe("Message retrieval", () => {
-  test("retrieves the message from the database", async () => {
+describe("Push delivery - database", () => {
+  test("uses the consolidated delivery RPC", async () => {
     await execute();
 
-    expect(mockFrom).toHaveBeenCalledWith("messages");
-    expect(mockMessageEq).toHaveBeenCalledWith("id", MESSAGE_ID);
+    expect(mockCreateAdminClient)
+      .toHaveBeenCalledTimes(1);
+
+    expect(mockRpc).toHaveBeenCalledTimes(1);
+
+    expect(mockRpc).toHaveBeenCalledWith(
+      "get_message_push_delivery",
+      {
+        target_message_id: MESSAGE_ID,
+      }
+    );
+  });
+
+  test("normalises uppercase message IDs", async () => {
+    const id =
+      "abcdef12-abcd-4abc-8abc-abcdef123456";
+
+    setDelivery({
+      message: {
+        ...MESSAGE,
+        id,
+      },
+    });
+
+    const result = await execute({
+      ...EVENT,
+      record: {
+        id: id.toUpperCase(),
+      },
+    });
+
+    expect(result.status).toBe(200);
+
+    expect(mockRpc).toHaveBeenCalledWith(
+      "get_message_push_delivery",
+      {
+        target_message_id: id,
+      }
+    );
   });
 
   test("returns 404 when the message does not exist", async () => {
-    mockMessageMaybeSingle.mockResolvedValue({
+    mockRpc.mockResolvedValue({
       data: null,
       error: null,
     });
@@ -471,54 +423,347 @@ describe("Message retrieval", () => {
     const result = await execute();
 
     expect(result.status).toBe(404);
-    expect(mockRpc).not.toHaveBeenCalled();
 
-    expect(mockSendWebPush).not.toHaveBeenCalled();
+    expect(result.body).toEqual({
+      error: "Message not found",
+    });
+
+    expect(mockSendWebPush)
+      .not.toHaveBeenCalled();
   });
 
-  test("handles message retrieval errors", async () => {
-    mockMessageMaybeSingle.mockResolvedValue({
+  test("handles database errors", async () => {
+    mockRpc.mockResolvedValue({
       data: null,
-      error: new Error("Database unavailable"),
+      error: {
+        message: "Database unavailable",
+        code: "TEST_ERROR",
+      },
     });
 
     const result = await execute();
 
     expect(result.status).toBe(500);
-    expect(mockSendWebPush).not.toHaveBeenCalled();
-  });
 
-  test("uses trusted database content instead of webhook content", async () => {
-    await execute({
-      event: createEvent({
-        record: {
-          id: MESSAGE_ID,
-          content: "Untrusted webhook content",
-          sender_id: "untrusted-sender",
-          conversation_id: "untrusted-chat",
-        },
-      }),
+    expect(result.body).toEqual({
+      error: "Push delivery failed",
     });
 
-    expect(mockGetNotificationPreview).toHaveBeenCalledWith(MESSAGE);
-    expect(mockProfileEq).toHaveBeenCalledWith("id", SENDER_ID);
+    expect(mockSendWebPush)
+      .not.toHaveBeenCalled();
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[Push] Delivery failed:",
+      {
+        message: "Database unavailable",
+        code: "TEST_ERROR",
+      }
+    );
+  });
+
+  test.each([
+    { message: null },
+    { subscriptions: null },
+    { subscriptions: {} },
+    {
+      message: {
+        ...MESSAGE,
+        id: "invalid-id",
+      },
+    },
+    {
+      message: {
+        ...MESSAGE,
+        conversation_id: "invalid-id",
+      },
+    },
+    {
+      message: {
+        ...MESSAGE,
+        id: SENDER_ID,
+      },
+    },
+  ])("rejects invalid RPC response %p", async (overrides) => {
+    setDelivery(overrides);
+
+    const result = await execute();
+
+    expect(result.status).toBe(500);
+
+    expect(result.body.error)
+      .toBe("Push delivery failed");
+
+    expect(mockSendWebPush)
+      .not.toHaveBeenCalled();
+  });
+
+  test("does not expose internal database errors", async () => {
+    mockRpc.mockRejectedValue(
+      new Error("Sensitive internal database details")
+    );
+
+    const result = await execute();
+
+    expect(result.status).toBe(500);
+
+    expect(result.body).toEqual({
+      error: "Push delivery failed",
+    });
   });
 });
 
-/* -------------------- SUBSCRIPTION ELIGIBILITY -------------------- */
+/* -------------------- PRIVATE NOTIFICATIONS -------------------- */
 
-describe("Notification eligibility", () => {
-  test("uses the authoritative eligibility RPC", async () => {
-    await execute();
+describe("Push delivery - private notifications", () => {
+  test("sends the correct notification", async () => {
+    const subscription = createSubscription();
 
-    expect(mockRpc).toHaveBeenCalledTimes(1);
-    expect(mockRpc).toHaveBeenCalledWith("get_message_push_subscriptions", { target_message_id: MESSAGE_ID });
+    setDelivery({
+      subscriptions: [subscription],
+    });
+
+    const result = await execute();
+
+    expect(result.status).toBe(200);
+
+    expect(result.body).toEqual({
+      success: true,
+      sent: 1,
+      failed: 0,
+      expired: 0,
+    });
+
+    expect(mockSendWebPush)
+      .toHaveBeenCalledTimes(1);
+
+    expect(mockSendWebPush.mock.calls[0][0])
+      .toEqual(subscription);
+
+    expect(mockSendWebPush.mock.calls[0][1])
+      .toEqual(expect.any(String));
+
+    expect(getNotification()).toEqual({
+      messageId: MESSAGE_ID,
+      title: "Alex Morgan sent you a message",
+      body: "Hello everyone",
+      url: `/messages/${CONVERSATION_ID}`,
+      tag: `chat:${CONVERSATION_ID}`,
+    });
   });
 
-  test("does not send when no subscriptions are eligible", async () => {
-    mockRpc.mockResolvedValue({
-      data: [],
-      error: null,
+  test.each([
+    [
+      { display_name: "", username: "alex" },
+      "alex",
+    ],
+    [
+      { display_name: "  ", username: " alex " },
+      "alex",
+    ],
+    [
+      { display_name: " Alex ", username: "alex" },
+      "Alex",
+    ],
+    [null, "Someone"],
+    [{}, "Someone"],
+  ])("uses the correct sender fallback %p", async (sender, name) => {
+    setDelivery({ sender });
+
+    await execute();
+
+    expect(getNotification().title)
+      .toBe(`${name} sent you a message`);
+  });
+
+  test("limits notification title length", async () => {
+    setDelivery({
+      sender: {
+        display_name: "A".repeat(200),
+      },
+    });
+
+    await execute();
+
+    expect(getNotification().title)
+      .toHaveLength(120);
+  });
+
+  test("uses database content instead of webhook content", async () => {
+    await execute({
+      ...EVENT,
+      record: {
+        id: MESSAGE_ID,
+        content: "Untrusted webhook content",
+        sender_id: "untrusted-sender",
+      },
+    });
+
+    expect(getNotification().body)
+      .toBe(MESSAGE.content);
+  });
+
+  test("does not generate mention titles for private chats", async () => {
+    setDelivery({
+      subscriptions: [
+        createSubscription(1, {
+          is_mentioned: true,
+        }),
+      ],
+    });
+
+    await execute();
+
+    expect(getNotification().title)
+      .toBe("Alex Morgan sent you a message");
+  });
+});
+
+/* -------------------- GROUP NOTIFICATIONS -------------------- */
+
+describe("Push delivery - group notifications", () => {
+  test("includes the sender and group name", async () => {
+    setDelivery({
+      conversation: GROUP_CONVERSATION,
+    });
+
+    const result = await execute();
+
+    expect(result.status).toBe(200);
+
+    expect(getNotification().title)
+      .toBe("Alex Morgan · Music Group");
+  });
+
+  test.each([null, undefined, "", "   "])(
+    "uses a fallback group name for %p",
+    async (name) => {
+      setDelivery({
+        conversation: {
+          type: "group",
+          name,
+        },
+      });
+
+      await execute();
+
+      expect(getNotification().title)
+        .toBe("Alex Morgan · Group chat");
+    }
+  );
+
+  test("trims the group name", async () => {
+    setDelivery({
+      conversation: {
+        type: "group",
+        name: "  Music Group  ",
+      },
+    });
+
+    await execute();
+
+    expect(getNotification().title)
+      .toBe("Alex Morgan · Music Group");
+  });
+
+  test("sends personalised notifications to mentioned recipients", async () => {
+    setDelivery({
+      conversation: GROUP_CONVERSATION,
+      subscriptions: [
+        createSubscription(1),
+        createSubscription(2, {
+          is_mentioned: true,
+        }),
+        createSubscription(3),
+      ],
+    });
+
+    const result = await execute();
+
+    expect(result.body).toEqual({
+      success: true,
+      sent: 3,
+      failed: 0,
+      expired: 0,
+    });
+
+    expect(getNotification(0).title)
+      .toBe("Alex Morgan · Music Group");
+
+    expect(getNotification(1).title)
+      .toBe("Alex Morgan mentioned you in Music Group");
+
+    expect(getNotification(2).title)
+      .toBe("Alex Morgan · Music Group");
+  });
+
+  test("preserves notification details for mentioned recipients", async () => {
+    setDelivery({
+      conversation: GROUP_CONVERSATION,
+      subscriptions: [
+        createSubscription(1),
+        createSubscription(2, {
+          is_mentioned: true,
+        }),
+      ],
+    });
+
+    await execute();
+
+    const standard = getNotification(0);
+    const mention = getNotification(1);
+
+    expect(mention).toEqual({
+      ...standard,
+      title: "Alex Morgan mentioned you in Music Group",
+    });
+  });
+
+  test.each([false, null, undefined, "true", 1])(
+    "requires a boolean mention flag, not %p",
+    async (isMentioned) => {
+      setDelivery({
+        conversation: GROUP_CONVERSATION,
+        subscriptions: [
+          createSubscription(1, {
+            is_mentioned: isMentioned,
+          }),
+        ],
+      });
+
+      await execute();
+
+      expect(getNotification().title)
+        .toBe("Alex Morgan · Music Group");
+    }
+  );
+
+  test("limits mention title length", async () => {
+    setDelivery({
+      conversation: {
+        type: "group",
+        name: "G".repeat(200),
+      },
+      subscriptions: [
+        createSubscription(1, {
+          is_mentioned: true,
+        }),
+      ],
+    });
+
+    await execute();
+
+    expect(getNotification().title)
+      .toHaveLength(120);
+  });
+});
+
+/* -------------------- SUBSCRIPTIONS -------------------- */
+
+describe("Push delivery - subscriptions", () => {
+  test("returns success when there are no recipients", async () => {
+    setDelivery({
+      sender: null,
+      subscriptions: [],
     });
 
     const result = await execute();
@@ -532,272 +777,128 @@ describe("Notification eligibility", () => {
       expired: 0,
     });
 
-    expect(mockSendWebPush).not.toHaveBeenCalled();
+    expect(mockRpc).toHaveBeenCalledTimes(1);
+
+    expect(mockSendWebPush)
+      .not.toHaveBeenCalled();
+
+    expect(mockFrom).not.toHaveBeenCalled();
   });
 
-  test("does not retrieve the sender when no subscriptions are eligible", async () => {
-    mockRpc.mockResolvedValue({
-      data: [],
-      error: null,
-    });
+  test("delivers to multiple subscriptions", async () => {
+    const subscriptions = [
+      createSubscription(1),
+      createSubscription(2),
+      createSubscription(3),
+    ];
 
-    await execute();
-
-    expect(mockFrom).not.toHaveBeenCalledWith("profiles");
-  });
-
-  test("does not build a notification when no subscriptions are eligible", async () => {
-    mockRpc.mockResolvedValue({
-      data: [],
-      error: null,
-    });
-
-    await execute();
-
-    expect(mockGetNotificationPreview).not.toHaveBeenCalled();
-  });
-
-  test("does not bypass the eligibility RPC by directly selecting subscriptions", async () => {
-    await execute();
-
-    expect(mockFrom).not.toHaveBeenCalledWith("push_subscriptions");
-  });
-
-  test("fails securely when eligibility retrieval fails", async () => {
-    mockRpc.mockResolvedValue({
-      data: null,
-      error: new Error("Eligibility check failed"),
-    });
+    setDelivery({ subscriptions });
 
     const result = await execute();
 
-    expect(result.status).toBe(500);
+    expect(result.body.sent).toBe(3);
 
-    expect(mockSendWebPush).not.toHaveBeenCalled();
+    expect(mockSendWebPush)
+      .toHaveBeenCalledTimes(3);
+
+    for (const subscription of subscriptions) {
+      expect(mockSendWebPush)
+        .toHaveBeenCalledWith(
+          subscription,
+          expect.any(String)
+        );
+    }
+
+    expect(mockRpc).toHaveBeenCalledTimes(1);
+
+    expect(mockFrom).not.toHaveBeenCalled();
   });
 
-  test.each([
-    null,
-    {},
-    "invalid",
-    123,
-  ])("rejects invalid eligibility responses: %p", async (data) => {
-    mockRpc.mockResolvedValue({
-      data,
-      error: null,
+  test("does not deliver to unsupported endpoints", async () => {
+    setDelivery({
+      subscriptions: [
+        createSubscription(1, {
+          endpoint: "https://example.com/test",
+        }),
+      ],
     });
+
+    mockIsValidPushEndpoint.mockReturnValue(false);
 
     const result = await execute();
 
-    expect(result.status).toBe(500);
-
-    expect(mockSendWebPush).not.toHaveBeenCalled();
-  });
-});
-
-/* -------------------- NOTIFICATION CONTENT -------------------- */
-
-describe("Notification content", () => {
-  test("retrieves the sender profile", async () => {
-    await execute();
-
-    expect(mockFrom).toHaveBeenCalledWith("profiles");
-    expect(mockProfileEq).toHaveBeenCalledWith("id", SENDER_ID);
-  });
-
-  test("constructs the correct notification", async () => {
-    await execute();
-
-    expect(mockSendWebPush).toHaveBeenCalledWith(
-      SUBSCRIPTION,
-      {
-        title: "Alex Morgan sent you a message",
-        body: "Hello there",
-        url: `/messages/${CONVERSATION_ID}`,
-        tag: `chat:${CONVERSATION_ID}`,
-      }
-    );
-  });
-
-  test("falls back to the username", async () => {
-    mockProfileMaybeSingle.mockResolvedValue({
-      data: {
-        display_name: null,
-        username: "alex",
-      },
-      error: null,
-    });
-
-    await execute();
-
-    expect(mockSendWebPush).toHaveBeenCalledWith(
-      SUBSCRIPTION,
-      expect.objectContaining({
-        title: "alex sent you a message",
-      })
-    );
-  });
-
-  test("ignores whitespace-only display names", async () => {
-    mockProfileMaybeSingle.mockResolvedValue({
-      data: {
-        display_name: "   ",
-        username: "alex",
-      },
-      error: null,
-    });
-
-    await execute();
-
-    expect(mockSendWebPush).toHaveBeenCalledWith(
-      SUBSCRIPTION,
-      expect.objectContaining({
-        title: "alex sent you a message",
-      })
-    );
-  });
-
-  test("uses a fallback when the sender has no name", async () => {
-    mockProfileMaybeSingle.mockResolvedValue({
-      data: {
-        display_name: null,
-        username: null,
-      },
-      error: null,
-    });
-
-    await execute();
-
-    expect(mockSendWebPush).toHaveBeenCalledWith(
-      SUBSCRIPTION,
-      expect.objectContaining({
-        title: "Someone sent you a message",
-      })
-    );
-  });
-
-  test("handles a missing sender profile", async () => {
-    mockProfileMaybeSingle.mockResolvedValue({
-      data: null,
-      error: null,
-    });
-
-    await execute();
-
-    expect(mockSendWebPush).toHaveBeenCalledWith(
-      SUBSCRIPTION,
-      expect.objectContaining({
-        title: "Someone sent you a message",
-      })
-    );
-  });
-
-  test("uses the generated notification preview", async () => {
-    mockGetNotificationPreview.mockReturnValue("Sent a photo");
-
-    await execute();
-
-    expect(mockSendWebPush).toHaveBeenCalledWith(
-      SUBSCRIPTION,
-      expect.objectContaining({
-        body: "Sent a photo",
-      })
-    );
-  });
-
-  test("handles sender retrieval errors", async () => {
-    mockProfileMaybeSingle.mockResolvedValue({
-      data: null,
-      error: new Error("Profile retrieval failed"),
-    });
-
-    const result = await execute();
-
-    expect(result.status).toBe(500);
-    expect(mockSendWebPush).not.toHaveBeenCalled();
-  });
-});
-
-/* -------------------- SUCCESSFUL DELIVERY -------------------- */
-
-describe("Successful notification delivery", () => {
-  test("reports one successful notification", async () => {
-    const result = await execute();
-
-    expect(result.status).toBe(200);
+    expect(result.status).toBe(503);
 
     expect(result.body).toEqual({
-      success: true,
+      success: false,
+      sent: 0,
+      failed: 1,
+      expired: 0,
+    });
+
+    expect(mockIsValidPushEndpoint)
+      .toHaveBeenCalledWith(
+        "https://example.com/test"
+      );
+
+    expect(mockSendWebPush)
+      .not.toHaveBeenCalled();
+
+    expect(mockFrom).not.toHaveBeenCalled();
+  });
+
+  test("continues delivering to valid endpoints", async () => {
+    const valid = createSubscription(1);
+
+    const invalid = createSubscription(2, {
+      endpoint: "https://example.com/test",
+    });
+
+    setDelivery({
+      subscriptions: [valid, invalid],
+    });
+
+    mockIsValidPushEndpoint.mockImplementation(
+      (endpoint) => endpoint === valid.endpoint
+    );
+
+    const result = await execute();
+
+    expect(result.status).toBe(503);
+
+    expect(result.body).toEqual({
+      success: false,
       sent: 1,
-      failed: 0,
-      expired: 0,
-    });
-  });
-
-  test("delivers notifications to multiple devices", async () => {
-    mockRpc.mockResolvedValue({
-      data: [
-        SUBSCRIPTION,
-        SECOND_SUBSCRIPTION,
-      ],
-      error: null,
-    });
-
-    const result = await execute();
-
-    expect(result.body).toEqual({
-      success: true,
-      sent: 2,
-      failed: 0,
+      failed: 1,
       expired: 0,
     });
 
-    expect(mockSendWebPush
-).toHaveBeenCalledTimes(2);
-  });
+    expect(mockSendWebPush)
+      .toHaveBeenCalledTimes(1);
 
-  test("does not delete valid subscriptions", async () => {
-    await execute();
-
-    expect(mockDelete).not.toHaveBeenCalled();
-  });
-
-  test("retrieves the sender only once for multiple devices", async () => {
-    mockRpc.mockResolvedValue({
-      data: [
-        SUBSCRIPTION,
-        SECOND_SUBSCRIPTION,
-      ],
-      error: null,
-    });
-
-    await execute();
-
-    expect(mockProfileMaybeSingle).toHaveBeenCalledTimes(1);
-  });
-
-  test("generates the notification preview only once", async () => {
-    mockRpc.mockResolvedValue({
-      data: [
-        SUBSCRIPTION,
-        SECOND_SUBSCRIPTION,
-      ],
-      error: null,
-    });
-
-    await execute();
-
-    expect(mockGetNotificationPreview).toHaveBeenCalledTimes(1);
+    expect(mockSendWebPush)
+      .toHaveBeenCalledWith(
+        valid,
+        expect.any(String)
+      );
   });
 });
 
 /* -------------------- EXPIRED SUBSCRIPTIONS -------------------- */
 
-describe("Expired subscription cleanup", () => {
+describe("Push delivery - expired subscriptions", () => {
   test.each([404, 410])(
-    "removes expired subscriptions with status %s",
+    "removes subscriptions returning %i",
     async (statusCode) => {
-      mockSendWebPush.mockRejectedValue(createPushError(statusCode));
+      const subscription = createSubscription();
+
+      setDelivery({
+        subscriptions: [subscription],
+      });
+
+      mockSendWebPush.mockRejectedValueOnce(
+        createPushError(statusCode)
+      );
 
       const result = await execute();
 
@@ -810,40 +911,32 @@ describe("Expired subscription cleanup", () => {
         expired: 1,
       });
 
-      expect(mockFrom).toHaveBeenCalledWith("push_subscriptions");
-      expect(mockDeleteIn).toHaveBeenCalledWith("id", [SUBSCRIPTION_ID]);
+      expect(mockFrom).toHaveBeenCalledWith(
+        "push_subscriptions"
+      );
+
+      expect(mockDelete)
+        .toHaveBeenCalledTimes(1);
+
+      expect(mockIn).toHaveBeenCalledWith(
+        "id",
+        [subscription.id]
+      );
     }
   );
 
-  test("deletes multiple expired subscriptions in one request", async () => {
-    mockRpc.mockResolvedValue({
-      data: [
-        SUBSCRIPTION,
-        SECOND_SUBSCRIPTION,
-      ],
-      error: null,
-    });
+  test("removes multiple expired subscriptions in one operation", async () => {
+    const subscriptions = [
+      createSubscription(1),
+      createSubscription(2),
+      createSubscription(3),
+    ];
 
-    mockSendWebPush.mockRejectedValue(createPushError(410));
-
-    const result = await execute();
-
-    expect(result.body.expired).toBe(2);
-    expect(mockDelete).toHaveBeenCalledTimes(1);
-    expect(mockDeleteIn).toHaveBeenCalledWith("id", [ SUBSCRIPTION_ID, SECOND_SUBSCRIPTION_ID ]);
-  });
-
-  test("deletes only expired subscriptions", async () => {
-    mockRpc.mockResolvedValue({
-      data: [
-        SUBSCRIPTION,
-        SECOND_SUBSCRIPTION,
-      ],
-      error: null,
-    });
+    setDelivery({ subscriptions });
 
     mockSendWebPush
-      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(createPushError(404))
+      .mockResolvedValueOnce({ statusCode: 201 })
       .mockRejectedValueOnce(createPushError(410));
 
     const result = await execute();
@@ -852,111 +945,104 @@ describe("Expired subscription cleanup", () => {
       success: true,
       sent: 1,
       failed: 0,
-      expired: 1,
+      expired: 2,
     });
 
-    expect(mockDeleteIn).toHaveBeenCalledWith("id", [SECOND_SUBSCRIPTION_ID]);
+    expect(mockFrom).toHaveBeenCalledTimes(1);
+
+    expect(mockDelete).toHaveBeenCalledTimes(1);
+
+    expect(mockIn).toHaveBeenCalledTimes(1);
+
+    expect(mockIn).toHaveBeenCalledWith(
+      "id",
+      [
+        subscriptions[0].id,
+        subscriptions[2].id,
+      ]
+    );
   });
 
-  test("handles a returned subscription cleanup error", async () => {
-    mockSendWebPush.mockRejectedValue(createPushError(410));
+  test("logs cleanup errors without discarding delivery results", async () => {
+    mockSendWebPush.mockRejectedValueOnce(
+      createPushError(410)
+    );
 
-    mockDeleteIn.mockResolvedValue({
-      error: new Error("Cleanup failed"),
+    mockIn.mockResolvedValue({
+      error: {
+        message: "Cleanup failed",
+      },
     });
 
     const result = await execute();
 
     expect(result.status).toBe(200);
+
     expect(result.body.expired).toBe(1);
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[Push] Expired subscription cleanup failed:",
+      "Cleanup failed"
+    );
   });
 });
 
 /* -------------------- DELIVERY FAILURES -------------------- */
 
-describe("Notification delivery failures", () => {
-  test.each([
-    400,
-    401,
-    403,
-    429,
-    500,
-    503,
-  ])("preserves subscriptions after push error %s", async (statusCode) => {
-    mockSendWebPush.mockRejectedValue(createPushError(statusCode));
+describe("Push delivery - failures", () => {
+  test.each([400, 401, 403, 429, 500, 503])(
+    "preserves subscriptions after delivery error %i",
+    async (statusCode) => {
+      mockSendWebPush.mockRejectedValueOnce(
+        createPushError(statusCode)
+      );
+
+      const result = await execute();
+
+      expect(result.status).toBe(503);
+
+      expect(result.body).toEqual({
+        success: false,
+        sent: 0,
+        failed: 1,
+        expired: 0,
+      });
+
+      expect(mockFrom).not.toHaveBeenCalled();
+    }
+  );
+
+  test("handles errors without a status code", async () => {
+    mockSendWebPush.mockRejectedValueOnce(
+      new Error("Network unavailable")
+    );
 
     const result = await execute();
 
     expect(result.status).toBe(503);
 
-    expect(result.body).toEqual({
-      success: false,
-      sent: 0,
-      failed: 1,
-      expired: 0,
-    });
-
-    expect(mockDelete).not.toHaveBeenCalled();
-  });
-
-  test("handles network failures", async () => {
-    mockSendWebPush.mockRejectedValue(new Error("Network unavailable"));
-
-    const result = await execute();
-
-    expect(result.status).toBe(503);
     expect(result.body.failed).toBe(1);
 
-    expect(mockDelete).not.toHaveBeenCalled();
+    expect(result.body.expired).toBe(0);
+
+    expect(mockFrom).not.toHaveBeenCalled();
   });
 
-  test("continues delivering after an individual failure", async () => {
-    mockRpc.mockResolvedValue({
-      data: [
-        SUBSCRIPTION,
-        SECOND_SUBSCRIPTION,
-      ],
-      error: null,
-    });
+  test("returns accurate counts for mixed delivery results", async () => {
+    const subscriptions = [
+      createSubscription(1),
+      createSubscription(2),
+      createSubscription(3),
+      createSubscription(4),
+    ];
+
+    setDelivery({ subscriptions });
 
     mockSendWebPush
-      .mockRejectedValueOnce(createPushError(503))
-      .mockResolvedValueOnce(undefined);
-
-    const result = await execute();
-
-    expect(result.status).toBe(503);
-
-    expect(result.body).toEqual({
-      success: false,
-      sent: 1,
-      failed: 1,
-      expired: 0,
-    });
-
-    expect(mockSendWebPush).toHaveBeenCalledTimes(2);
-  });
-
-  test("correctly counts mixed delivery outcomes", async () => {
-    const thirdSubscription = {
-      ...SUBSCRIPTION,
-      id: "66666666-6666-4666-8666-666666666666",
-      endpoint: "https://push.example.com/device-3",
-    };
-
-    mockRpc.mockResolvedValue({
-      data: [
-        SUBSCRIPTION,
-        SECOND_SUBSCRIPTION,
-        thirdSubscription,
-      ],
-      error: null,
-    });
-
-    mockSendWebPush
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ statusCode: 201 })
       .mockRejectedValueOnce(createPushError(410))
-      .mockRejectedValueOnce(createPushError(503));
+      .mockRejectedValueOnce(createPushError(503))
+      .mockResolvedValueOnce({ statusCode: 201 });
 
     const result = await execute();
 
@@ -964,186 +1050,162 @@ describe("Notification delivery failures", () => {
 
     expect(result.body).toEqual({
       success: false,
-      sent: 1,
+      sent: 2,
       failed: 1,
       expired: 1,
     });
 
-    expect(mockDeleteIn).toHaveBeenCalledWith("id", [SECOND_SUBSCRIPTION_ID]);
+    expect(mockIn).toHaveBeenCalledWith(
+      "id",
+      [subscriptions[1].id]
+    );
   });
 });
 
-/* -------------------- DELIVERY BATCHING -------------------- */
+/* -------------------- BATCHING -------------------- */
 
-describe("Delivery batching", () => {
-  function createSubscriptions(count) {
-    return Array.from(
-      { length: count },
-      (_, index) => ({
-        ...SUBSCRIPTION,
-
-        id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(index + 1).padStart(12, "0")}`,
-        endpoint: `https://push.example.com/device-${index}`,
-      })
+describe("Push delivery - batching", () => {
+  test("delivers more than one batch", async () => {
+    const subscriptions = Array.from(
+      { length: 25 },
+      (_, index) => createSubscription(index + 1)
     );
-  }
 
-  test("delivers more than one batch of notifications", async () => {
-    mockRpc.mockResolvedValue({
-      data: createSubscriptions(25),
-      error: null,
-    });
+    setDelivery({ subscriptions });
 
     const result = await execute();
 
     expect(result.status).toBe(200);
-    expect(result.body.sent).toBe(25);
 
-    expect(mockSendWebPush).toHaveBeenCalledTimes(25);
+    expect(result.body).toEqual({
+      success: true,
+      sent: 25,
+      failed: 0,
+      expired: 0,
+    });
+
+    expect(mockSendWebPush)
+      .toHaveBeenCalledTimes(25);
+
+    expect(mockRpc).toHaveBeenCalledTimes(1);
+
+    expect(mockFrom).not.toHaveBeenCalled();
   });
 
-  test("limits concurrent deliveries to ten", async () => {
-    mockRpc.mockResolvedValue({
-      data: createSubscriptions(25),
-      error: null,
-    });
+  test("limits concurrent delivery to ten subscriptions", async () => {
+    const subscriptions = Array.from(
+      { length: 25 },
+      (_, index) => createSubscription(index + 1)
+    );
+
+    setDelivery({ subscriptions });
 
     let active = 0;
     let peak = 0;
 
-    mockSendWebPush.mockImplementation(
-      async () => {
-        active++;
+    mockSendWebPush.mockImplementation(async () => {
+      active++;
 
-        peak = Math.max(peak, active);
+      peak = Math.max(peak, active);
 
+      try {
         await Promise.resolve();
 
+        return { statusCode: 201 };
+      } finally {
         active--;
       }
-    );
+    });
 
     const result = await execute();
 
     expect(result.body.sent).toBe(25);
 
-    expect(peak).toBeLessThanOrEqual(10);
-    expect(peak).toBeGreaterThan(0);
+    expect(peak).toBe(10);
+
+    expect(active).toBe(0);
   });
 
   test("waits for the first batch before starting the next", async () => {
-    mockRpc.mockResolvedValue({
-      data: createSubscriptions(15),
-      error: null,
-    });
+    const subscriptions = Array.from(
+      { length: 12 },
+      (_, index) => createSubscription(index + 1)
+    );
 
-    const firstBatchStarted = deferred();
+    setDelivery({ subscriptions });
+
     const firstBatch = deferred();
+    const firstBatchStarted = deferred();
 
     let started = 0;
 
-    mockSendWebPush.mockImplementation(
-      async () => {
-        started++;
+    mockSendWebPush.mockImplementation(() => {
+      started++;
 
-        if (started === 10) {
-          firstBatchStarted.resolve();
-        }
-
-        if (started <= 10) {
-          await firstBatch.promise;
-        }
+      if (started === 10) {
+        firstBatchStarted.resolve();
       }
-    );
 
-    const operation = execute();
+      if (started <= 10) {
+        return firstBatch.promise;
+      }
+
+      return Promise.resolve({
+        statusCode: 201,
+      });
+    });
+
+    const request = execute();
 
     try {
       await firstBatchStarted.promise;
 
-      await flushPromises();
+      expect(mockSendWebPush)
+        .toHaveBeenCalledTimes(10);
 
-      expect(mockSendWebPush).toHaveBeenCalledTimes(10);
+      expect(mockFrom).not.toHaveBeenCalled();
     } finally {
-      firstBatch.resolve();
+      firstBatch.resolve({
+        statusCode: 201,
+      });
     }
 
-    const result = await operation;
+    const result = await request;
 
-    expect(result.body.sent).toBe(15);
+    expect(mockSendWebPush)
+      .toHaveBeenCalledTimes(12);
 
-    expect(mockSendWebPush).toHaveBeenCalledTimes(15);
-  });
-
-  test("batches expired subscription deletion across delivery batches", async () => {
-    const subscriptions = createSubscriptions(25);
-
-    mockRpc.mockResolvedValue({
-      data: subscriptions,
-      error: null,
-    });
-
-    mockSendWebPush.mockRejectedValue(createPushError(410));
-
-    const result = await execute();
-
-    expect(result.body.expired).toBe(25);
-
-    expect(mockDelete).toHaveBeenCalledTimes(1);
-    expect(mockDeleteIn).toHaveBeenCalledWith("id", subscriptions.map((subscription) => subscription.id));
+    expect(result.body.sent).toBe(12);
   });
 });
 
-/* -------------------- RESPONSE SECURITY -------------------- */
+/* -------------------- RESPONSE HEADERS -------------------- */
 
-describe("Response security", () => {
+describe("Push delivery - response headers", () => {
   test("prevents caching successful responses", async () => {
     const result = await execute();
 
-    expect(result.headers.get("cache-control")).toBe("no-store");
+    expect(result.headers.get("cache-control"))
+      .toBe("no-store");
   });
 
   test("prevents caching unauthorized responses", async () => {
-    const result = await execute({
-      authorization: null,
-    });
+    const result = await execute(EVENT, null);
 
-    expect(
-      result.headers.get("cache-control")
-    ).toBe("no-store");
+    expect(result.headers.get("cache-control"))
+      .toBe("no-store");
   });
 
-  test("does not expose internal database errors", async () => {
-    mockRpc.mockResolvedValue({
-      data: null,
-      error: new Error("Sensitive internal database information"),
-    });
-
-    const result = await execute();
-
-    expect(result.status).toBe(500);
-    expect(JSON.stringify(result.body)).not.toContain("Sensitive internal database information");
-  });
-
-  test("does not expose subscription credentials", async () => {
-    const result = await execute();
-    const body = JSON.stringify(result.body);
-
-    expect(body).not.toContain(SUBSCRIPTION.endpoint);
-    expect(body).not.toContain(SUBSCRIPTION.p256dh);
-    expect(body).not.toContain(SUBSCRIPTION.auth_key);
-  });
-
-  test("handles admin client initialization failures", async () => {
-    mockCreateAdminClient.mockImplementation(() => {
-        throw new Error("Admin initialization failed");
-      }
+  test("prevents caching error responses", async () => {
+    mockRpc.mockRejectedValue(
+      new Error("Database unavailable")
     );
 
     const result = await execute();
 
     expect(result.status).toBe(500);
 
-    expect(mockSendWebPush).not.toHaveBeenCalled();
+    expect(result.headers.get("cache-control"))
+      .toBe("no-store");
   });
 });

@@ -142,7 +142,7 @@ beforeEach(() => {
 
   warnSpy = jest
     .spyOn(console, "warn")
-    .mockImplementation(() => {});
+    .mockImplementation(() => { });
 });
 
 afterEach(async () => {
@@ -321,30 +321,38 @@ describe("Connection status", () => {
     );
   });
 
-  test("reports a channel error", async () => {
-    await connect();
+  test.each([
+    "CHANNEL_ERROR",
+    "TIMED_OUT",
+  ])("reports disconnection after %s", async (status) => {
+    const connection = await connect();
 
-    emitStatus(
-      "CHANNEL_ERROR",
-      new Error("Connection failed")
-    );
+    emitStatus("SUBSCRIBED");
 
-    expect(mockOnStatus).toHaveBeenCalledWith(
-      false
-    );
+    expect(connection.isConnected()).toBe(true);
+
+    emitStatus(status, new Error("Connection failed"));
+
+    expect(connection.isConnected()).toBe(false);
+
+    expect(mockOnStatus.mock.calls).toEqual([
+      [true],
+      [false],
+    ]);
 
     expect(warnSpy).toHaveBeenCalled();
   });
 
-  test("reports a connection timeout", async () => {
-    await connect();
+  test.each([
+    "CHANNEL_ERROR",
+    "TIMED_OUT",
+  ])("suppresses redundant disconnected status for %s", async (status) => {
+    const connection = await connect();
 
-    emitStatus("TIMED_OUT");
+    emitStatus(status);
 
-    expect(mockOnStatus).toHaveBeenCalledWith(
-      false
-    );
-
+    expect(connection.isConnected()).toBe(false);
+    expect(mockOnStatus).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
   });
 
@@ -391,17 +399,47 @@ describe("Outgoing typing events", () => {
 
     emitStatus("SUBSCRIBED");
 
-    connection.broadcast(false);
+    expect(connection.broadcast(true)).toBe(true);
+    expect(connection.broadcast(false)).toBe(true);
 
-    expect(mockSend).toHaveBeenCalledWith({
+    expect(mockSend).toHaveBeenCalledTimes(2);
+
+    expect(mockSend).toHaveBeenLastCalledWith({
       type: "broadcast",
       event: "typing",
-
       payload: {
         userId: USER_A,
         typing: false,
       },
     });
+  });
+
+  test("suppresses redundant stopped typing events", async () => {
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    expect(connection.broadcast(false)).toBe(false);
+    expect(mockSend).not.toHaveBeenCalled();
+
+    connection.broadcast(true);
+    connection.broadcast(false);
+
+    expect(connection.broadcast(false)).toBe(false);
+    expect(connection.broadcast(false)).toBe(false);
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+  });
+
+  test("allows repeated typing heartbeats", async () => {
+    const connection = await connect();
+
+    emitStatus("SUBSCRIBED");
+
+    expect(connection.broadcast(true)).toBe(true);
+    expect(connection.broadcast(true)).toBe(true);
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
   });
 
   test("does not broadcast before subscription completes", async () => {
@@ -734,29 +772,44 @@ describe("Channel cleanup", () => {
     );
   });
 
-  test("broadcasts stopped typing before closing", async () => {
-    const connection = await connect();
+test("broadcasts stopped typing before closing", async () => {
+  const connection = await connect();
 
-    emitStatus("SUBSCRIBED");
+  emitStatus("SUBSCRIBED");
 
-    connection.close();
+  connection.broadcast(true);
+  connection.close();
 
-    expect(mockSend).toHaveBeenCalledWith({
-      type: "broadcast",
-      event: "typing",
+  expect(mockSend).toHaveBeenCalledTimes(2);
 
-      payload: {
-        userId: USER_A,
-        typing: false,
-      },
-    });
-
-    expect(
-      mockSend.mock.invocationCallOrder[0]
-    ).toBeLessThan(
-      mockRemoveChannel.mock.invocationCallOrder[0]
-    );
+  expect(mockSend).toHaveBeenLastCalledWith({
+    type: "broadcast",
+    event: "typing",
+    payload: {
+      userId: USER_A,
+      typing: false,
+    },
   });
+
+  expect(
+    mockSend.mock.invocationCallOrder[1]
+  ).toBeLessThan(
+    mockRemoveChannel.mock.invocationCallOrder[0]
+  );
+
+  expect(connection.isConnected()).toBe(false);
+});
+
+test("does not broadcast when closing an idle channel", async () => {
+  const connection = await connect();
+
+  emitStatus("SUBSCRIBED");
+
+  connection.close();
+
+  expect(mockSend).not.toHaveBeenCalled();
+  expect(mockRemoveChannel).toHaveBeenCalledTimes(1);
+});
 
   test("does not broadcast when closing an unconnected channel", async () => {
     const connection = await connect();
@@ -770,21 +823,43 @@ describe("Channel cleanup", () => {
     );
   });
 
-  test("supports repeated cleanup calls", async () => {
+test.each([true, false])(
+  "supports repeated cleanup calls with active typing: %s",
+  async (typing) => {
     const connection = await connect();
 
     emitStatus("SUBSCRIBED");
 
+    if (typing) {
+      connection.broadcast(true);
+    }
+
+    mockSend.mockClear();
+
     connection.close();
     connection.close();
     connection.close();
 
-    expect(mockRemoveChannel).toHaveBeenCalledTimes(
-      1
+    expect(mockRemoveChannel).toHaveBeenCalledTimes(1);
+
+    expect(mockSend).toHaveBeenCalledTimes(
+      typing ? 1 : 0
     );
 
-    expect(mockSend).toHaveBeenCalledTimes(1);
-  });
+    if (typing) {
+      expect(mockSend).toHaveBeenCalledWith({
+        type: "broadcast",
+        event: "typing",
+        payload: {
+          userId: USER_A,
+          typing: false,
+        },
+      });
+    }
+
+    expect(connection.isConnected()).toBe(false);
+  }
+);
 
   test("ignores outgoing broadcasts after cleanup", async () => {
     const connection = await connect();

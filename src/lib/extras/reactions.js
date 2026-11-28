@@ -1,7 +1,7 @@
 // src/lib/extras/reactions.js
 
 import { createClient } from "@/lib/supabase/client";
-import { QUICK_REACTIONS } from "@/constants/reactions";
+import { QUICK_REACTIONS } from "@/constants/messages";
 
 const supabase = createClient();
 

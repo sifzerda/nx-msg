@@ -2,61 +2,123 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
+
 import { getDateKey } from "@/utils/messageUtils";
 
+import {
+  scheduleBrowserTask,
+  subscribePageVisibility,
+  getPageVisible,
+} from "@/hooks/useBrowser";
+
+const listeners = new Set();
+
+let currentDay = null;
+let currentKey = null;
+
+let cancelMidnight = null;
+let unsubscribeVisibility = null;
+
+const SERVER_SNAPSHOT = null;
+
+/* -------------------- SNAPSHOTS -------------------- */
+
+function getSnapshot() {
+  if (!currentDay) {
+    currentDay = new Date();
+    currentKey = getDateKey(currentDay);
+  }
+
+  return currentDay;
+}
+
+function getServerSnapshot() {
+  return SERVER_SNAPSHOT;
+}
+
+/* -------------------- DATE UPDATES -------------------- */
+
+function notifyListeners() {
+  for (const listener of [...listeners]) {
+    listener();
+  }
+}
+
+function refreshDay() {
+  const now = new Date();
+  const key = getDateKey(now);
+
+  if (currentKey !== key) {
+    currentDay = now;
+    currentKey = key;
+
+    notifyListeners();
+  }
+}
+
+function scheduleMidnight() {
+  cancelMidnight?.();
+  cancelMidnight = null;
+
+  if (!listeners.size) return;
+
+  const midnight = new Date();
+
+  midnight.setHours(24, 0, 0, 100);
+
+  cancelMidnight = scheduleBrowserTask(
+    () => {
+      cancelMidnight = null;
+
+      refreshDay();
+      scheduleMidnight();
+    },
+    midnight.getTime()
+  );
+}
+
+function handleVisibility() {
+  if (!getPageVisible()) return;
+
+  refreshDay();
+  scheduleMidnight();
+}
+
+/* -------------------- SUBSCRIPTION -------------------- */
+
+function subscribe(listener) {
+  listeners.add(listener);
+
+  if (listeners.size === 1) {
+    unsubscribeVisibility =
+      subscribePageVisibility(handleVisibility);
+
+    refreshDay();
+    scheduleMidnight();
+  }
+
+  return () => {
+    listeners.delete(listener);
+
+    if (!listeners.size) {
+      cancelMidnight?.();
+      cancelMidnight = null;
+
+      unsubscribeVisibility?.();
+      unsubscribeVisibility = null;
+    }
+  };
+}
+
+/* -------------------- PUBLIC HOOK -------------------- */
+
 export default function useCurrentDay() {
-  const [now, setNow] = useState(() => new Date());
-
-  useEffect(() => {
-    let timer;
-
-    function scheduleUpdate() {
-      clearTimeout(timer);
-
-      const current = new Date();
-
-      setNow((previous) =>
-        getDateKey(previous) === getDateKey(current)
-          ? previous
-          : current
-      );
-
-      const midnight = new Date(current);
-
-      midnight.setHours(24, 0, 0, 0);
-
-      timer = setTimeout(
-        scheduleUpdate,
-        Math.max(
-          100,
-          midnight.getTime() - current.getTime() + 100
-        )
-      );
-    }
-
-    function handleVisibility() {
-      if (document.visibilityState === "visible") {
-        scheduleUpdate();
-      }
-    }
-
-    scheduleUpdate();
-
-    document.addEventListener(
-      "visibilitychange",
-      handleVisibility
-    );
-
-    return () => {
-      clearTimeout(timer);
-
-      document.removeEventListener(
-        "visibilitychange",
-        handleVisibility
-      );
-    };
-  }, []);
+  const now = useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getServerSnapshot
+  );
 
   return now;
 }

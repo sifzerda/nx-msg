@@ -35,9 +35,9 @@ const USER_C = "33333333-3333-4333-8333-333333333333";
 const CHAT_A = "44444444-4444-4444-8444-444444444444";
 const CHAT_B = "55555555-5555-4555-8555-555555555555";
 
-const BROADCAST_INTERVAL = 1000;
+const BROADCAST_INTERVAL = 3000;
 const INACTIVITY_TIMEOUT = 2000;
-const REMOTE_TIMEOUT = 5000;
+const REMOTE_TIMEOUT = 7000;
 
 /* -------------------- MOCK CONNECTIONS -------------------- */
 
@@ -48,8 +48,9 @@ let errorSpy;
 function createMockConnection(options) {
     const connection = {
         options,
-        broadcast: jest.fn(),
+        broadcast: jest.fn().mockReturnValue(true),
         close: jest.fn(),
+        isConnected: jest.fn().mockReturnValue(false),
     };
 
     connections.push(connection);
@@ -492,98 +493,105 @@ describe("Local typing", () => {
 /* -------------------- BROADCAST THROTTLING -------------------- */
 
 describe("Broadcast throttling", () => {
-    test("does not broadcast on every keystroke", async () => {
-        const { result } = await setup();
+  test("does not broadcast on every keystroke", async () => {
+    const { result } = await setup();
 
-        connectChannel();
+    connectChannel();
 
-        const connection = currentConnection();
+    const connection = currentConnection();
 
-        act(() => {
-            result.current.notifyTyping("H");
-            result.current.notifyTyping("He");
-            result.current.notifyTyping("Hel");
-            result.current.notifyTyping("Hell");
-            result.current.notifyTyping("Hello");
-        });
-
-        const typingEvents =
-            connection.broadcast.mock.calls.filter(
-                ([typing]) => typing === true
-            );
-
-        expect(typingEvents).toHaveLength(1);
+    act(() => {
+      for (const text of [
+        "H",
+        "He",
+        "Hel",
+        "Hell",
+        "Hello",
+      ]) {
+        result.current.notifyTyping(text);
+      }
     });
 
-    test("throttles broadcasts within the interval", async () => {
-        const { result } = await setup();
+    expect(connection.broadcast.mock.calls).toEqual([
+      [true],
+    ]);
+  });
 
-        connectChannel();
+  test("throttles broadcasts within the interval", async () => {
+    const { result } = await setup();
 
-        const connection = currentConnection();
+    connectChannel();
 
-        act(() => {
-            result.current.notifyTyping("Hello");
-        });
+    const connection = currentConnection();
 
-        await advanceTime(
-            BROADCAST_INTERVAL - 1
-        );
-
-        act(() => {
-            result.current.notifyTyping("Hello again");
-        });
-
-        expect(connection.broadcast).toHaveBeenCalledTimes(
-            1
-        );
+    act(() => {
+      result.current.notifyTyping("Hello");
     });
 
-    test("allows another broadcast after the interval", async () => {
-        const { result } = await setup();
+    await advanceTime(1500);
 
-        connectChannel();
-
-        const connection = currentConnection();
-
-        act(() => {
-            result.current.notifyTyping("Hello");
-        });
-
-        await advanceTime(BROADCAST_INTERVAL + 1);
-
-        act(() => {
-            result.current.notifyTyping("Hello again");
-        });
-
-        const typingEvents =
-            connection.broadcast.mock.calls.filter(
-                ([typing]) => typing === true
-            );
-
-        expect(typingEvents).toHaveLength(2);
+    act(() => {
+      result.current.notifyTyping("Hello again");
     });
 
-    test("does not continuously broadcast without input", async () => {
-        const { result } = await setup();
+    await advanceTime(BROADCAST_INTERVAL - 1501);
 
-        connectChannel();
-
-        const connection = currentConnection();
-
-        act(() => {
-            result.current.notifyTyping("Hello");
-        });
-
-        await advanceTime(10_000);
-
-        const typingEvents =
-            connection.broadcast.mock.calls.filter(
-                ([typing]) => typing === true
-            );
-
-        expect(typingEvents).toHaveLength(1);
+    act(() => {
+      result.current.notifyTyping("Still typing");
     });
+
+    expect(connection.broadcast.mock.calls).toEqual([
+      [true],
+    ]);
+  });
+
+  test("allows another broadcast after the interval", async () => {
+    const { result } = await setup();
+
+    connectChannel();
+
+    const connection = currentConnection();
+
+    act(() => {
+      result.current.notifyTyping("Hello");
+    });
+
+    await advanceTime(1500);
+
+    act(() => {
+      result.current.notifyTyping("Hello again");
+    });
+
+    await advanceTime(BROADCAST_INTERVAL - 1500);
+
+    act(() => {
+      result.current.notifyTyping("Still typing");
+    });
+
+    expect(connection.broadcast.mock.calls).toEqual([
+      [true],
+      [true],
+    ]);
+  });
+
+  test("does not continuously broadcast without input", async () => {
+    const { result } = await setup();
+
+    connectChannel();
+
+    const connection = currentConnection();
+
+    act(() => {
+      result.current.notifyTyping("Hello");
+    });
+
+    await advanceTime(10_000);
+
+    expect(connection.broadcast.mock.calls).toEqual([
+      [true],
+      [false],
+    ]);
+  });
 });
 
 /* -------------------- INACTIVITY TIMEOUT -------------------- */
@@ -759,88 +767,85 @@ describe("Remote typing indicators", () => {
 /* -------------------- REMOTE EXPIRATION -------------------- */
 
 describe("Remote typing expiration", () => {
-    test("expires stale remote typing indicators", async () => {
-        const { result } = await setup();
+  test("expires stale remote typing indicators", async () => {
+    const { result } = await setup();
 
-        connectChannel();
+    connectChannel();
+    receiveTyping(USER_B, true);
 
-        receiveTyping(USER_B, true);
+    await advanceTime(REMOTE_TIMEOUT);
 
-        await advanceTime(REMOTE_TIMEOUT);
+    expect(result.current.typingUsers).toEqual([]);
+  });
 
-        expect(result.current.typingUsers).toEqual([]);
-    });
+  test("does not expire a user prematurely", async () => {
+    const { result } = await setup();
 
-    test("does not expire a user prematurely", async () => {
-        const { result } = await setup();
+    connectChannel();
+    receiveTyping(USER_B, true);
 
-        connectChannel();
+    await advanceTime(REMOTE_TIMEOUT - 1);
 
-        receiveTyping(USER_B, true);
+    expect(result.current.typingUsers).toEqual([
+      USER_B,
+    ]);
+  });
 
-        await advanceTime(REMOTE_TIMEOUT - 1);
+  test("refreshes expiration when another event arrives", async () => {
+    const { result } = await setup();
 
-        expect(result.current.typingUsers).toContain(
-            USER_B
-        );
-    });
+    connectChannel();
+    receiveTyping(USER_B, true);
 
-    test("refreshes expiration when another event arrives", async () => {
-        const { result } = await setup();
+    await advanceTime(4000);
 
-        connectChannel();
+    receiveTyping(USER_B, true);
 
-        receiveTyping(USER_B, true);
+    await advanceTime(REMOTE_TIMEOUT - 1);
 
-        await advanceTime(4000);
+    expect(result.current.typingUsers).toEqual([
+      USER_B,
+    ]);
 
-        receiveTyping(USER_B, true);
+    await advanceTime(1);
 
-        await advanceTime(1000);
+    expect(result.current.typingUsers).toEqual([]);
+  });
 
-        expect(result.current.typingUsers).toContain(
-            USER_B
-        );
+  test("maintains independent expiration timers", async () => {
+    const { result } = await setup();
 
-        await advanceTime(4000);
+    connectChannel();
 
-        expect(result.current.typingUsers).toEqual([]);
-    });
+    receiveTyping(USER_B, true);
 
-    test("maintains independent expiration timers", async () => {
-        const { result } = await setup();
+    await advanceTime(2000);
 
-        connectChannel();
+    receiveTyping(USER_C, true);
 
-        receiveTyping(USER_B, true);
+    await advanceTime(REMOTE_TIMEOUT - 2000);
 
-        await advanceTime(2000);
+    expect(result.current.typingUsers).toEqual([
+      USER_C,
+    ]);
 
-        receiveTyping(USER_C, true);
+    await advanceTime(2000);
 
-        await advanceTime(3000);
+    expect(result.current.typingUsers).toEqual([]);
+  });
 
-        expect(result.current.typingUsers).toEqual([
-            USER_C,
-        ]);
+  test("cancels expiration when a user stops typing", async () => {
+    const { result } = await setup();
 
-        await advanceTime(2000);
+    connectChannel();
 
-        expect(result.current.typingUsers).toEqual([]);
-    });
+    receiveTyping(USER_B, true);
+    receiveTyping(USER_B, false);
 
-    test("cancels expiration when a user stops typing", async () => {
-        const { result } = await setup();
+    await advanceTime(REMOTE_TIMEOUT * 2);
 
-        connectChannel();
-
-        receiveTyping(USER_B, true);
-        receiveTyping(USER_B, false);
-
-        await advanceTime(REMOTE_TIMEOUT * 2);
-
-        expect(result.current.typingUsers).toEqual([]);
-    });
+    expect(result.current.typingUsers).toEqual([]);
+  });
 });
 
 /* -------------------- CONVERSATION SWITCHING -------------------- */
@@ -1166,77 +1171,77 @@ describe("Hook cleanup", () => {
         );
     });
 
-test("clears pending typing timers", async () => {
-  const { result, unmount } = await setup();
+    test("clears pending typing timers", async () => {
+        const { result, unmount } = await setup();
 
-  connectChannel();
+        connectChannel();
 
-  const connection = currentConnection();
+        const connection = currentConnection();
 
-  const setTimeoutSpy = jest.spyOn(
-    globalThis,
-    "setTimeout"
-  );
+        const setTimeoutSpy = jest.spyOn(
+            globalThis,
+            "setTimeout"
+        );
 
-  const clearTimeoutSpy = jest.spyOn(
-    globalThis,
-    "clearTimeout"
-  );
+        const clearTimeoutSpy = jest.spyOn(
+            globalThis,
+            "clearTimeout"
+        );
 
-  try {
-    act(() => {
-      result.current.notifyTyping("Hello");
+        try {
+            act(() => {
+                result.current.notifyTyping("Hello");
+            });
+
+            receiveTyping(USER_B, true);
+            receiveTyping(USER_C, true);
+
+            // Capture only timers associated with typing.
+            const typingTimers = setTimeoutSpy.mock.calls
+                .map((args, index) => ({
+                    delay: args[1],
+                    handle: setTimeoutSpy.mock.results[index].value,
+                }))
+                .filter(
+                    ({ delay }) =>
+                        delay === INACTIVITY_TIMEOUT ||
+                        delay === REMOTE_TIMEOUT
+                );
+
+            // One local timer and two remote timers.
+            expect(typingTimers).toHaveLength(3);
+
+            expect(
+                typingTimers.filter(
+                    ({ delay }) => delay === INACTIVITY_TIMEOUT
+                )
+            ).toHaveLength(1);
+
+            expect(typingTimers.filter(({ delay }) => delay === REMOTE_TIMEOUT)).toHaveLength(2);
+
+            clearTimeoutSpy.mockClear();
+
+            unmount();
+
+            // Verify every typing timer was explicitly cleared.
+            for (const { handle } of typingTimers) {
+                expect(clearTimeoutSpy).toHaveBeenCalledWith(handle);
+            }
+
+            expect(connection.close).toHaveBeenCalledTimes(1);
+
+            connection.broadcast.mockClear();
+
+            await advanceTime(REMOTE_TIMEOUT * 2);
+
+            // No delayed broadcasts after unmounting.
+            expect(connection.broadcast).not.toHaveBeenCalled();
+
+        } finally {
+            setTimeoutSpy.mockRestore();
+            clearTimeoutSpy.mockRestore();
+        }
     });
-
-    receiveTyping(USER_B, true);
-    receiveTyping(USER_C, true);
-
-    // Capture only timers associated with typing.
-    const typingTimers = setTimeoutSpy.mock.calls
-      .map((args, index) => ({
-        delay: args[1],
-        handle: setTimeoutSpy.mock.results[index].value,
-      }))
-      .filter(
-        ({ delay }) =>
-          delay === INACTIVITY_TIMEOUT ||
-          delay === REMOTE_TIMEOUT
-      );
-
-    // One local timer and two remote timers.
-    expect(typingTimers).toHaveLength(3);
-
-    expect(
-      typingTimers.filter(
-        ({ delay }) => delay === INACTIVITY_TIMEOUT
-      )
-    ).toHaveLength(1);
-
-    expect(typingTimers.filter(({ delay }) => delay === REMOTE_TIMEOUT)).toHaveLength(2);
-
-    clearTimeoutSpy.mockClear();
-
-    unmount();
-
-    // Verify every typing timer was explicitly cleared.
-    for (const { handle } of typingTimers) {
-      expect(clearTimeoutSpy).toHaveBeenCalledWith(handle);
-    }
-
-    expect(connection.close).toHaveBeenCalledTimes(1);
-
-    connection.broadcast.mockClear();
-
-    await advanceTime(REMOTE_TIMEOUT * 2);
-
-    // No delayed broadcasts after unmounting.
-    expect(connection.broadcast).not.toHaveBeenCalled();
-
-  } finally {
-    setTimeoutSpy.mockRestore();
-    clearTimeoutSpy.mockRestore();
-  }
-});
 
     test("ignores late callbacks after unmounting", async () => {
         const { unmount } = await setup();

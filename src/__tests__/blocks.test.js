@@ -22,9 +22,7 @@ jest.doMock("@/lib/supabase/client", () => ({ createClient: mockCreateClient }))
 const {
     blockUser,
     unblockUser,
-    isUserBlocked,
     getBlockedUsers,
-    canSendChatMessage,
 } = require("@/lib/blocks");
 
 /* -------------------- TEST CONSTANTS -------------------- */
@@ -116,42 +114,6 @@ describe("unblockUser", () => {
     });
 });
 
-/* -------------------- BLOCK STATUS -------------------- */
-
-describe("isUserBlocked", () => {
-    test.each([true, false])(
-        "returns block status %s",
-        async (blocked) => {
-            mockRpc.mockResolvedValue({
-                data: blocked,
-                error: null,
-            });
-
-            await expect(isUserBlocked(USER_ID)).resolves.toBe(blocked);
-
-            expect(mockRpc).toHaveBeenCalledWith(
-                "is_user_blocked",
-                {
-                    target_user_id: USER_ID,
-                }
-            );
-        }
-    );
-
-    test("propagates database errors", async () => {
-        const error = new Error("Request failed");
-
-        mockRpc.mockResolvedValue({
-            data: null,
-            error,
-        });
-
-        await expect(
-            isUserBlocked(USER_ID)
-        ).rejects.toBe(error);
-    });
-});
-
 /* -------------------- BLOCKED USERS -------------------- */
 
 describe("getBlockedUsers", () => {
@@ -206,55 +168,6 @@ describe("getBlockedUsers", () => {
     });
 });
 
-/* -------------------- MESSAGING PERMISSION -------------------- */
-
-describe("canSendChatMessage", () => {
-    test.each([true, false])(
-        "returns messaging permission %s",
-        async (allowed) => {
-            mockRpc.mockResolvedValue({
-                data: allowed,
-                error: null,
-            });
-
-            await expect(
-                canSendChatMessage(CHAT_ID)
-            ).resolves.toBe(allowed);
-
-            expect(mockRpc).toHaveBeenCalledWith(
-                "can_send_chat_message",
-                {
-                    chat_id: CHAT_ID,
-                }
-            );
-        }
-    );
-
-    test("denies messaging for null data", async () => {
-        mockRpc.mockResolvedValue({
-            data: null,
-            error: null,
-        });
-
-        await expect(
-            canSendChatMessage(CHAT_ID)
-        ).resolves.toBe(false);
-    });
-
-    test("propagates database errors", async () => {
-        const error = new Error("Request failed");
-
-        mockRpc.mockResolvedValue({
-            data: null,
-            error,
-        });
-
-        await expect(
-            canSendChatMessage(CHAT_ID)
-        ).rejects.toBe(error);
-    });
-});
-
 /* -------------------- INPUT VALIDATION -------------------- */
 
 describe("UUID validation", () => {
@@ -271,8 +184,6 @@ describe("UUID validation", () => {
     const functions = [
         blockUser,
         unblockUser,
-        isUserBlocked,
-        canSendChatMessage,
     ];
 
     describe.each(functions)(

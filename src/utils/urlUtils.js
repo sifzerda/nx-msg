@@ -173,27 +173,6 @@ export function splitMessageText(value) {
   return parts;
 }
 
-/* -------------------- PREVIEW EXTRACTION -------------------- */
-
-export function extractUrls(
-  text,
-  limit = MAX_PREVIEWS_PER_MESSAGE
-) {
-  if (limit <= 0) return [];
-
-  const urls = new Set();
-
-  for (const match of findUrls(text)) {
-    urls.add(match.normalized);
-
-    if (urls.size >= limit) {
-      break;
-    }
-  }
-
-  return [...urls];
-}
-
 /* -------------------- HOSTNAME -------------------- */
 
 export function getUrlHostname(value) {

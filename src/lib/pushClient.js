@@ -102,7 +102,7 @@ async function postJSON(url, body) {
 
 /* -------------------- PREFERENCE -------------------- */
 
-export async function getPushPreference(userId) {
+async function getPushPreference(userId) {
   if (!userId) {
     throw new Error("User ID is required");
   }
@@ -118,7 +118,7 @@ export async function getPushPreference(userId) {
   return data?.notifications_enabled === true;
 }
 
-export async function disablePushPreference(userId) {
+async function disablePushPreference(userId) {
   if (!userId) {
     throw new Error("User ID is required");
   }
@@ -164,13 +164,16 @@ function getRegistration() {
   return registrationRequest;
 }
 
-async function getExistingSubscription() {
-  const registration =
-    await navigator.serviceWorker.getRegistration("/");
+async function getExistingSubscription(registration) {
+  const currentRegistration =
+    registration === undefined
+      ? await navigator.serviceWorker.getRegistration("/")
+      : registration;
 
-  return registration
-    ? registration.pushManager.getSubscription()
-    : null;
+  return (
+    (await currentRegistration?.pushManager?.getSubscription()) ??
+    null
+  );
 }
 
 /* -------------------- SUBSCRIPTION -------------------- */
@@ -352,19 +355,22 @@ export async function disablePushNotifications(userId) {
 
 /* -------------------- DISMISS NOTIFICATIONS -------------------- */
 
-async function dismissNotifications() {
-  const registration =
-    await navigator.serviceWorker.getRegistration("/");
-
-  if (!registration) return;
+async function dismissNotifications(registration) {
+  if (
+    typeof registration?.getNotifications !== "function"
+  ) {
+    return;
+  }
 
   const notifications =
     await registration.getNotifications();
 
   for (const notification of notifications) {
+    const tag = notification.tag;
+
     if (
-      notification.tag === "messenger" ||
-      notification.tag.startsWith("chat:")
+      tag === "messenger" ||
+      tag?.startsWith("chat:")
     ) {
       notification.close();
     }
@@ -381,11 +387,22 @@ export async function cleanupPushForLogout() {
     return null;
   }
 
+  let registration;
+
+  try {
+    registration =
+      await navigator.serviceWorker.getRegistration("/");
+  } catch (error) {
+    return error;
+  }
+
+  if (!registration) return null;
+
   let cleanupError = null;
 
   try {
     const subscription =
-      await getExistingSubscription();
+      await getExistingSubscription(registration);
 
     if (subscription) {
       const { error, warning } =
@@ -403,7 +420,7 @@ export async function cleanupPushForLogout() {
   }
 
   try {
-    await dismissNotifications();
+    await dismissNotifications(registration);
   } catch (error) {
     cleanupError ??= error;
   }

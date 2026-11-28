@@ -16,7 +16,10 @@ import {
   LoaderCircle,
 } from "lucide-react";
 
-import { logout } from "@/lib/logout";
+import {
+  logout,
+  redirectAfterLogout,
+} from "@/lib/logout";
 
 const AUTHENTICATED_LINKS = [
   {
@@ -86,7 +89,7 @@ export default function Header({ user = null }) {
         );
       }
 
-      window.location.replace("/login");
+      redirectAfterLogout();
 
       navigating = true;
     } catch (error) {

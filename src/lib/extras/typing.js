@@ -1,15 +1,9 @@
 // src/lib/extras/typing.js
 
 import { createClient } from "@/lib/supabase/client";
+import { isUuid } from "@/utils/validation";
 
 const supabase = createClient();
-
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function isValidId(id) {
-  return typeof id === "string" && UUID_PATTERN.test(id);
-}
 
 export async function createTypingChannel({
   conversationId,
@@ -17,7 +11,7 @@ export async function createTypingChannel({
   onTyping,
   onStatus,
 }) {
-  if (!isValidId(conversationId) || !isValidId(userId)) {
+  if (!isUuid(conversationId) || !isUuid(userId)) {
     throw new Error("Invalid conversation or user ID");
   }
 
@@ -27,8 +21,7 @@ export async function createTypingChannel({
   let connected = false;
   let advertisedTyping = false;
 
-  const channel = supabase.channel(
-    `typing:${conversationId}`,
+  const channel = supabase.channel(`typing:${conversationId}`,
     {
       config: {
         private: true,
@@ -44,7 +37,7 @@ export async function createTypingChannel({
     if (
       closed ||
       !connected ||
-      !isValidId(payload?.userId) ||
+      !isUuid(payload?.userId) ||
       payload.userId === userId ||
       typeof payload.typing !== "boolean"
     ) {
