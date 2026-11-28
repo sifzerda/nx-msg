@@ -3,28 +3,38 @@
 import { createClient } from "@/lib/supabase/client";
 
 const supabase = createClient();
+const PROFILE_COLUMNS = "id, username, display_name, avatar_url";
 
-export async function searchUsers(query) {
-  const search = query.trim();
-
-  if (search.length < 2) return [];
-
+async function requireUserId() {
   const {
     data: { user },
-    error: authError,
+    error,
   } = await supabase.auth.getUser();
 
-  if (authError || !user) {
+  if (error || !user) {
     throw new Error("Not authenticated");
   }
 
+  return user.id;
+}
+
+export async function searchUsers(query) {
+  const search = query
+    .trim()
+    .replace(/[%_,()."\\]/g, "")
+    .trim();
+
+  if (search.length < 2) return [];
+
+  const userId = await requireUserId();
+
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, username, display_name, avatar_url")
+    .select(PROFILE_COLUMNS)
     .or(
-      `username.ilike.%${search.replace(/[%_,().]/g, "")}%,display_name.ilike.%${search.replace(/[%_,().]/g, "")}%`
+      `username.ilike.%${search}%,display_name.ilike.%${search}%`
     )
-    .neq("id", user.id)
+    .neq("id", userId)
     .limit(20);
 
   if (error) throw error;
@@ -33,56 +43,40 @@ export async function searchUsers(query) {
 }
 
 export async function getContacts() {
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user) {
-    throw new Error("Not authenticated");
-  }
+  const userId = await requireUserId();
 
   const { data, error } = await supabase
     .from("contacts")
     .select(`
       id,
-      contact_id,
       profiles!contacts_contact_id_fkey (
-        id,
-        username,
-        display_name,
-        avatar_url
+        ${PROFILE_COLUMNS}
       )
     `)
-    .eq("user_id", user.id)
+    .eq("user_id", userId)
     .order("created_at", { ascending: false });
 
   if (error) throw error;
 
-  return (data ?? []).map((contact) => ({
-    ...contact.profiles,
-    relationId: contact.id,
-  }));
+  return (data ?? [])
+    .filter((contact) => contact.profiles)
+    .map(({ id, profiles }) => ({
+      ...profiles,
+      relationId: id,
+    }));
 }
 
 export async function addContact(contactId) {
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
+  const userId = await requireUserId();
 
-  if (authError || !user) {
-    throw new Error("Not authenticated");
-  }
-
-  if (user.id === contactId) {
+  if (userId === contactId) {
     throw new Error("You cannot add yourself");
   }
 
   const { error } = await supabase
     .from("contacts")
     .insert({
-      user_id: user.id,
+      user_id: userId,
       contact_id: contactId,
     });
 
@@ -90,19 +84,12 @@ export async function addContact(contactId) {
 }
 
 export async function removeContact(contactId) {
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user) {
-    throw new Error("Not authenticated");
-  }
+  const userId = await requireUserId();
 
   const { error } = await supabase
     .from("contacts")
     .delete()
-    .eq("user_id", user.id)
+    .eq("user_id", userId)
     .eq("contact_id", contactId);
 
   if (error) throw error;

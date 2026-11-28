@@ -52,26 +52,25 @@ jest.doMock("@/lib/supabase/client", () => ({
 /* -------------------- LOAD SERVICE -------------------- */
 
 const {
-    sendMessage,
-    getConversations,
-    createGroupChat,
     startChat,
+    createGroupChat,
+    getConversations,
     getGroupSummaries,
     getMessages,
     getMessagesByIds,
+    sendMessage,
     markChatRead,
     getRecipientReadAt,
     subscribeToAllMessages,
     subscribeToMessages,
     subscribeToReadReceipts,
+    validateMessage,
 } = require("@/lib/messages");
 
 /* -------------------- TEST DATA -------------------- */
 
 const CHAT_ID = "chat-1";
-
 const USER_ID = "user-1";
-
 const REPLY_ID = "message-previous";
 
 const mockMessage = {
@@ -206,19 +205,10 @@ beforeEach(() => {
 describe("Messaging API - text messages", () => {
     test("sends a valid message", async () => {
         const expected = mockSendSuccess();
-
-        const result = await sendMessage(
-            CHAT_ID,
-            "Hello"
-        );
+        const result = await sendMessage(CHAT_ID, "Hello");
 
         expect(mockRpc).toHaveBeenCalledTimes(1);
-
-        expect(mockRpc).toHaveBeenCalledWith(
-            "send_chat_message",
-            expectedMessageParams()
-        );
-
+        expect(mockRpc).toHaveBeenCalledWith("send_chat_message", expectedMessageParams());
         expect(mockSingle).toHaveBeenCalledTimes(1);
 
         expect(result).toEqual(expected);
@@ -682,15 +672,10 @@ describe("Messaging API - conversation summaries", () => {
         const result = await getConversations();
 
         expect(mockRpc).toHaveBeenCalledTimes(1);
-
-        expect(mockRpc).toHaveBeenCalledWith(
-            "get_conversation_summaries"
-        );
+        expect(mockRpc).toHaveBeenCalledWith("get_conversation_summaries");
 
         expect(result).toHaveLength(2);
-
         expect(result[0].id).toBe("group-1");
-
         expect(result[1].id).toBe("chat-1");
     });
 
@@ -720,9 +705,7 @@ describe("Messaging API - conversation summaries", () => {
 
         const result = await getConversations();
 
-        expect(
-            result.map((conversation) => conversation.id)
-        ).toEqual([
+        expect(result.map((conversation) => conversation.id)).toEqual([
             "chat-2",
             "group-1",
             "chat-1",
@@ -757,11 +740,7 @@ describe("Messaging API - conversation summaries", () => {
             error: new Error("Unable to retrieve conversations"),
         });
 
-        await expect(
-            getConversations()
-        ).rejects.toThrow(
-            "Unable to retrieve conversations"
-        );
+        await expect(getConversations()).rejects.toThrow("Unable to retrieve conversations");
     });
 });
 
@@ -769,12 +748,7 @@ describe("Messaging API - conversation summaries", () => {
 
 describe("Messaging API - blocking permissions", () => {
     function createPermissionError(message) {
-        return Object.assign(
-            new Error(message),
-            {
-                code: "42501",
-            }
-        );
+        return Object.assign(new Error(message), { code: "42501" });
     }
 
     function rejectMessage(error) {
@@ -785,131 +759,71 @@ describe("Messaging API - blocking permissions", () => {
     }
 
     test("propagates blocked messaging errors", async () => {
-        const error = createPermissionError(
-            "Messaging is unavailable in this conversation"
-        );
+        const error = createPermissionError("Messaging is unavailable in this conversation");
 
         rejectMessage(error);
-
-        await expect(
-            sendMessage(CHAT_ID, "Hello")
-        ).rejects.toBe(error);
+        await expect(sendMessage(CHAT_ID, "Hello")).rejects.toBe(error);
     });
 
     test("preserves the database permission error code", async () => {
-        rejectMessage(
-            createPermissionError(
-                "Messaging is unavailable in this conversation"
-            )
-        );
+        rejectMessage(createPermissionError("Messaging is unavailable in this conversation"));
 
-        await expect(
-            sendMessage(CHAT_ID, "Hello")
-        ).rejects.toMatchObject({
+        await expect(sendMessage(CHAT_ID, "Hello")).rejects.toMatchObject({
             code: "42501",
         });
     });
 
     test("does not retry a rejected message", async () => {
-        rejectMessage(
-            createPermissionError(
-                "Messaging is unavailable in this conversation"
-            )
-        );
+        rejectMessage(createPermissionError("Messaging is unavailable in this conversation"));
 
-        await expect(
-            sendMessage(CHAT_ID, "Hello")
-        ).rejects.toThrow();
+        await expect(sendMessage(CHAT_ID, "Hello")).rejects.toThrow();
 
         expect(mockRpc).toHaveBeenCalledTimes(1);
-
         expect(mockSingle).toHaveBeenCalledTimes(1);
     });
 
     test("does not bypass messaging restrictions using direct inserts", async () => {
-        rejectMessage(
-            createPermissionError(
-                "Messaging is unavailable in this conversation"
-            )
-        );
+        rejectMessage(createPermissionError("Messaging is unavailable in this conversation"));
 
-        await expect(
-            sendMessage(CHAT_ID, "Hello")
-        ).rejects.toThrow();
+        await expect(sendMessage(CHAT_ID, "Hello")).rejects.toThrow();
 
         expect(mockFrom).not.toHaveBeenCalled();
     });
 
     test("propagates blocked attachment errors", async () => {
-        rejectMessage(
-            createPermissionError(
-                "Messaging is unavailable in this conversation"
-            )
-        );
+        rejectMessage(createPermissionError("Messaging is unavailable in this conversation"));
 
-        await expect(
-            sendMessage(
-                CHAT_ID,
-                "",
-                null,
-                mockAttachment
-            )
+        await expect(sendMessage(CHAT_ID, "", null, mockAttachment)
         ).rejects.toMatchObject({
             code: "42501",
         });
     });
 
     test("propagates blocked GIF errors", async () => {
-        rejectMessage(
-            createPermissionError(
-                "Messaging is unavailable in this conversation"
-            )
-        );
+        rejectMessage(createPermissionError("Messaging is unavailable in this conversation"));
 
-        await expect(
-            sendMessage(
-                CHAT_ID,
-                "",
-                null,
-                null,
-                "abc123GIF"
-            )
-        ).rejects.toMatchObject({
+        await expect(sendMessage(CHAT_ID, "", null, null, "abc123GIF")).rejects.toMatchObject({
             code: "42501",
         });
     });
 
     test("propagates blocked reply errors", async () => {
-        rejectMessage(
-            createPermissionError(
-                "Messaging is unavailable in this conversation"
-            )
-        );
+        rejectMessage(createPermissionError("Messaging is unavailable in this conversation"));
 
-        await expect(
-            sendMessage(
-                CHAT_ID,
-                "Reply",
-                REPLY_ID
-            )
-        ).rejects.toMatchObject({
+        await expect(sendMessage(CHAT_ID, "Reply", REPLY_ID)).rejects.toMatchObject({
             code: "42501",
         });
     });
 
     test("propagates blocked private conversation creation errors", async () => {
-        const error = createPermissionError(
-            "Private messaging is unavailable"
-        );
+        const error = createPermissionError("Private messaging is unavailable");
 
         mockRpc.mockResolvedValue({
             data: null,
             error,
         });
 
-        await expect(
-            startChat("user-2")
-        ).rejects.toBe(error);
+        await expect(startChat("user-2")).rejects.toBe(error);
 
         expect(mockRpc).toHaveBeenCalledTimes(1);
     });
@@ -932,7 +846,6 @@ describe("Messaging API - blocking permissions", () => {
         const result = await getConversations();
 
         expect(result).toEqual(conversations);
-
         expect(result[0].is_blocked_by_me).toBe(true);
         expect(result[0].can_send_messages).toBe(false);
     });
@@ -1015,6 +928,72 @@ describe("Messaging API - blocking permissions", () => {
         expect(mockRpc).toHaveBeenCalledTimes(1);
         expect(mockFrom).not.toHaveBeenCalled();
         expect(mockGetUser).not.toHaveBeenCalled();
+    });
+});
+
+/* -------------------- MESSAGE VALIDATION -------------------- */
+
+describe("validateMessage", () => {
+    test("trims message content", () => {
+        expect(
+            validateMessage("  Hello  ")
+        ).toBe("Hello");
+    });
+
+    test("rejects invalid content types", () => {
+        expect(() =>
+            validateMessage(null)
+        ).toThrow("Invalid message content");
+    });
+
+    test("rejects empty messages", () => {
+        expect(() =>
+            validateMessage("   ")
+        ).toThrow("Message cannot be empty");
+    });
+
+    test("accepts attachment-only messages", () => {
+        expect(
+            validateMessage("", { name: "file.pdf" })
+        ).toBe("");
+    });
+
+    test("accepts GIF-only messages", () => {
+        expect(
+            validateMessage("", null, "abc123")
+        ).toBe("");
+    });
+
+    test("rejects messages exceeding the limit", () => {
+        expect(() =>
+            validateMessage("a".repeat(5001))
+        ).toThrow("Message is too long");
+    });
+
+    test("accepts messages at the limit", () => {
+        const message = "a".repeat(5000);
+
+        expect(
+            validateMessage(message)
+        ).toBe(message);
+    });
+
+    test("rejects attachments combined with GIFs", () => {
+        expect(() =>
+            validateMessage(
+                "Hello",
+                { name: "file.pdf" },
+                "abc123"
+            )
+        ).toThrow(
+            "A message cannot contain both a GIF and an attachment"
+        );
+    });
+
+    test("rejects invalid GIF IDs", () => {
+        expect(() =>
+            validateMessage("Hello", null, "invalid gif!")
+        ).toThrow("Invalid GIF ID");
     });
 });
 

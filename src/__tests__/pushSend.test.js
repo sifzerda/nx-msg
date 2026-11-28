@@ -88,7 +88,7 @@ jest.doMock("@/lib/webPush", () => ({
 
 const mockGetNotificationPreview = jest.fn();
 
-jest.doMock("@/utils/notificationPreview", () => ({
+jest.doMock("@/utils/messageUtils", () => ({
   getNotificationPreview:
     mockGetNotificationPreview,
 }));

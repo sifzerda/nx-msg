@@ -4,9 +4,7 @@
 
 import { memo, useMemo } from "react";
 import { ArrowUpRight, Clock3 } from "lucide-react";
-
-import { getMessagePreview } from "@/utils/messagePreview";
-
+import { getMessagePreview } from "@/utils/messageUtils";
 import SearchAttachmentPreview from "./SearchAttachmentPreview";
 import SearchGifPreview from "./SearchGifPreview";
 

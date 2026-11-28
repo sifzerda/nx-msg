@@ -8,126 +8,109 @@ import {
   removeContact,
 } from "@/lib/contacts";
 
+const INITIAL_STATE = {
+  contacts: [],
+  loading: false,
+  error: null,
+};
+
 let generation = 0;
 let contactRequest = null;
 let refreshPending = false;
 
-const useContactStore = create((set, get) => ({
-  contacts: [],
-  loading: false,
-  error: null,
-
-  fetchContacts: ({ force = false } = {}) => {
+const useContactStore = create((set, get) => {
+  function fetchContacts({ force = false } = {}) {
     if (contactRequest) {
-      if (force) {
-        refreshPending = true;
-      }
-
+      refreshPending ||= force;
       return contactRequest;
     }
 
-    const currentGeneration = generation;
+    const current = generation;
 
-    set({
-      loading: true,
-      error: null,
-    });
+    const request = Promise.resolve().then(async () => {
+      if (current !== generation) return false;
 
-    const request = (async () => {
       try {
         do {
           refreshPending = false;
 
           const contacts = await getContacts();
 
-          if (currentGeneration !== generation) {
-            return;
-          }
+          if (current !== generation) return false;
 
           set({ contacts });
         } while (refreshPending);
+
+        return true;
       } catch (error) {
-        if (currentGeneration === generation) {
-          set({ error: error.message });
+        if (current === generation) {
+          set({
+            error: error?.message || "Unable to load contacts.",
+          });
         }
-      } finally {
-        if (currentGeneration === generation) {
-          set({ loading: false });
-        }
+
+        return false;
       }
-    })();
+    }).finally(() => {
+      if (contactRequest === request) {
+        contactRequest = null;
+        set({ loading: false });
+      }
+    });
 
     contactRequest = request;
 
-    request.finally(() => {
-      if (contactRequest === request) {
-        contactRequest = null;
-      }
+    set({
+      loading: true,
+      error: null,
     });
 
     return request;
-  },
+  }
 
-  add: async (contactId) => {
-    const currentGeneration = generation;
-
-    set({ error: null });
-
-    try {
-      await addContact(contactId);
-
-      if (currentGeneration !== generation) {
-        return false;
-      }
-
-      await get().fetchContacts({ force: true });
-
-      return currentGeneration === generation;
-    } catch (error) {
-      if (currentGeneration === generation) {
-        set({ error: error.message });
-      }
-
-      return false;
-    }
-  },
-
-  remove: async (contactId) => {
-    const currentGeneration = generation;
+  async function mutateContact(contactId, operation) {
+    const current = generation;
 
     set({ error: null });
 
     try {
-      await removeContact(contactId);
+      await operation(contactId);
 
-      if (currentGeneration !== generation) {
-        return false;
-      }
+      if (current !== generation) return false;
 
       await get().fetchContacts({ force: true });
 
-      return currentGeneration === generation;
+      return current === generation;
     } catch (error) {
-      if (currentGeneration === generation) {
-        set({ error: error.message });
+      if (current === generation) {
+        set({
+          error: error?.message || "Unable to update contact.",
+        });
       }
 
       return false;
     }
-  },
+  }
 
-  reset: () => {
-    generation++;
+  return {
+    ...INITIAL_STATE,
 
-    contactRequest = null;
-    refreshPending = false;
+    fetchContacts,
 
-    set({
-      contacts: [],
-      loading: false,
-      error: null,
-    });
-  },
-}));
+    add: (contactId) =>
+      mutateContact(contactId, addContact),
+
+    remove: (contactId) =>
+      mutateContact(contactId, removeContact),
+
+    reset: () => {
+      generation++;
+      contactRequest = null;
+      refreshPending = false;
+
+      set({ ...INITIAL_STATE });
+    },
+  };
+});
 
 export default useContactStore;

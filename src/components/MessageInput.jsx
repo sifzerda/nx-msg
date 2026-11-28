@@ -126,14 +126,9 @@ function MessageInput({
   const [attachment, setAttachment] = useState(null);
   const [selectedGif, setSelectedGif] = useState(null);
 
-  const [activePicker, setActivePicker] =
-    useState(null);
-
-  const [processing, setProcessing] =
-    useState(false);
-
-  const [attachmentError, setAttachmentError] =
-    useState(null);
+  const [activePicker, setActivePicker] = useState(null);
+  const [processing, setProcessing] = useState(false);
+  const [attachmentError, setAttachmentError] = useState(null);
 
   /* -------------------- ZUSTAND -------------------- */
 
@@ -144,12 +139,8 @@ function MessageInput({
 
   /* -------------------- DERIVED STATE -------------------- */
 
-  const gifPickerOpen =
-    activePicker === COMPOSER_PICKER.GIF;
-
-  const emojiPickerOpen =
-    activePicker === COMPOSER_PICKER.EMOJI;
-
+  const gifPickerOpen = activePicker === COMPOSER_PICKER.GIF;
+  const emojiPickerOpen = activePicker === COMPOSER_PICKER.EMOJI;
   const pickerDisabled = sending || processing;
 
   const canSend =

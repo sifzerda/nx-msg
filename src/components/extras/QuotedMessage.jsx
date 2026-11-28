@@ -3,7 +3,7 @@
 "use client";
 
 import { memo } from "react";
-import { getMessagePreview } from "@/utils/messagePreview";
+import { getMessagePreview } from "@/utils/messageUtils";
 
 function QuotedMessage({
   message,

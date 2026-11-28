@@ -3,22 +3,49 @@
 import { createClient } from "@/lib/supabase/client";
 
 const supabase = createClient();
+
 const CACHE_TTL = 5 * 60 * 1000;
 const MISSING_TTL = 30 * 1000;
+
 const MAX_CACHE_SIZE = 1000;
+const BATCH_SIZE = 100;
+
+const PROFILE_COLUMNS = "id, username, display_name";
+
 const profileCache = new Map();
 const pendingRequests = new Map();
 
+let queuedProfiles = new Map();
+let batchScheduled = false;
 let generation = 0;
 
-function pruneCache() {
-  const now = Date.now();
+/* -------------------- CACHE -------------------- */
 
-  for (const [id, entry] of profileCache) {
-    if (entry.expiresAt <= now) {
-      profileCache.delete(id);
-    }
+function getCachedProfile(id) {
+  const entry = profileCache.get(id);
+
+  if (!entry) return undefined;
+
+  if (entry.expiresAt <= Date.now()) {
+    profileCache.delete(id);
+    return undefined;
   }
+
+  // Move recently accessed profiles to the end.
+  profileCache.delete(id);
+  profileCache.set(id, entry);
+
+  return entry.profile;
+}
+
+function cacheProfile(id, profile, now) {
+  profileCache.delete(id);
+
+  profileCache.set(id, {
+    profile,
+    expiresAt:
+      now + (profile ? CACHE_TTL : MISSING_TTL),
+  });
 
   while (profileCache.size > MAX_CACHE_SIZE) {
     const oldest = profileCache.keys().next().value;
@@ -27,13 +54,23 @@ function pruneCache() {
   }
 }
 
-function fetchProfiles(ids) {
-  const currentGeneration = generation;
+/* -------------------- PROFILE RETRIEVAL -------------------- */
 
-  const request = (async () => {
+async function fetchBatch(entries, currentGeneration) {
+  const ids = entries.map(([id]) => id);
+
+  try {
+    if (currentGeneration !== generation) {
+      for (const [, request] of entries) {
+        request.resolve(null);
+      }
+
+      return;
+    }
+
     const { data, error } = await supabase
       .from("profiles")
-      .select("id, username, display_name")
+      .select(PROFILE_COLUMNS)
       .in("id", ids);
 
     if (error) throw error;
@@ -45,96 +82,145 @@ function fetchProfiles(ids) {
       ])
     );
 
-    if (currentGeneration === generation) {
-      const now = Date.now();
+    const isCurrent =
+      currentGeneration === generation;
 
-      for (const id of ids) {
-        const profile = profiles.get(id) ?? null;
+    const now = Date.now();
 
-        profileCache.set(id, {
-          profile,
-          expiresAt:
-            now + (profile ? CACHE_TTL : MISSING_TTL),
-        });
+    for (const [id, request] of entries) {
+      const profile = isCurrent
+        ? profiles.get(id) ?? null
+        : null;
+
+      if (isCurrent) {
+        cacheProfile(id, profile, now);
       }
 
-      pruneCache();
+      request.resolve(profile);
     }
-
-    return profiles;
-  })();
-
-  for (const id of ids) {
-    pendingRequests.set(id, request);
-  }
-
-  function cleanup() {
-    for (const id of ids) {
-      if (pendingRequests.get(id) === request) {
+  } catch (error) {
+    for (const [, request] of entries) {
+      if (currentGeneration === generation) {
+        request.reject(error);
+      } else {
+        request.resolve(null);
+      }
+    }
+  } finally {
+    for (const [id, request] of entries) {
+      if (pendingRequests.get(id) === request.promise) {
         pendingRequests.delete(id);
       }
     }
   }
-
-  request.then(cleanup, cleanup);
-
-  return request;
 }
+
+/* -------------------- REQUEST BATCHING -------------------- */
+
+async function flushQueue(currentGeneration) {
+  if (currentGeneration !== generation) return;
+
+  batchScheduled = false;
+
+  const entries = [...queuedProfiles];
+
+  queuedProfiles.clear();
+
+  // Process bounded batches sequentially.
+  for (
+    let offset = 0;
+    offset < entries.length;
+    offset += BATCH_SIZE
+  ) {
+    await fetchBatch(
+      entries.slice(offset, offset + BATCH_SIZE),
+      currentGeneration
+    );
+  }
+}
+
+function scheduleBatch() {
+  if (batchScheduled) return;
+
+  batchScheduled = true;
+
+  const currentGeneration = generation;
+
+  queueMicrotask(() => {
+    void flushQueue(currentGeneration);
+  });
+}
+
+function requestProfile(id) {
+  const cached = getCachedProfile(id);
+
+  // null represents a cached missing profile.
+  if (cached !== undefined) {
+    return Promise.resolve(cached);
+  }
+
+  const pending = pendingRequests.get(id);
+
+  if (pending) return pending;
+
+  let resolve;
+  let reject;
+
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+
+  pendingRequests.set(id, promise);
+
+  queuedProfiles.set(id, {
+    promise,
+    resolve,
+    reject,
+  });
+
+  scheduleBatch();
+
+  return promise;
+}
+
+/* -------------------- PUBLIC INTERFACE -------------------- */
 
 export async function getMessageProfiles(userIds) {
   const currentGeneration = generation;
 
-  const ids = [...new Set(userIds.filter(Boolean))];
+  const ids = [
+    ...new Set(userIds.filter(Boolean)),
+  ];
 
-  const results = new Map();
-  const missing = [];
-  const requests = new Set();
+  if (!ids.length) return {};
 
-  const now = Date.now();
-
-  for (const id of ids) {
-    const cached = profileCache.get(id);
-
-    if (cached && cached.expiresAt > now) {
-      results.set(id, cached.profile);
-      continue;
-    }
-
-    const pending = pendingRequests.get(id);
-
-    if (pending) {
-      requests.add(pending);
-    } else {
-      missing.push(id);
-    }
-  }
-
-  if (missing.length) {
-    requests.add(fetchProfiles(missing));
-  }
-
-  const responses = await Promise.all(requests);
+  const profiles = await Promise.all(
+    ids.map(requestProfile)
+  );
 
   if (currentGeneration !== generation) {
     return {};
   }
 
-  for (const profiles of responses) {
-    for (const [id, profile] of profiles) {
-      results.set(id, profile);
-    }
-  }
-
   return Object.fromEntries(
-    ids.map((id) => [
+    ids.map((id, index) => [
       id,
-      results.get(id) ?? null,
+      profiles[index],
     ])
   );
 }
 
 export function clearMessageProfileCache() {
   generation++;
+
+  // Settle requests that have not started yet.
+  for (const request of queuedProfiles.values()) {
+    request.resolve(null);
+  }
+
+  queuedProfiles = new Map();
+  batchScheduled = false;
 
   profileCache.clear();
   pendingRequests.clear();

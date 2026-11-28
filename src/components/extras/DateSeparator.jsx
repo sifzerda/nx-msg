@@ -3,7 +3,7 @@
 "use client";
 
 import { memo } from "react";
-import { formatMessageDate } from "@/utils/messageDates";
+import { formatMessageDate } from "@/utils/messageUtils";
 
 function DateSeparator({ date, now }) {
   return (

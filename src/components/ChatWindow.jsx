@@ -27,7 +27,7 @@ import useMessageReactions from "@/hooks/useMessageReactions";
 
 import { getMessageProfiles } from "@/lib/messageProfiles";
 import { exportChatLog } from "@/lib/chatExport";
-import { groupMessagesByDate } from "@/utils/messageDates";
+import { groupMessagesByDate } from "@/utils/messageUtils";
 
 import MessageBubble from "./MessageBubble";
 import MessageInput from "./MessageInput";

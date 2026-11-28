@@ -3,7 +3,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getDateKey } from "@/utils/messageDates";
+import { getDateKey } from "@/utils/messageUtils";
 
 export default function useCurrentDay() {
   const [now, setNow] = useState(() => new Date());

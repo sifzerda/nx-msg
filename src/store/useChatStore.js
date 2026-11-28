@@ -8,12 +8,12 @@ import {
   getMessages,
   sendMessage,
   markChatRead,
+  validateMessage,
 } from "@/lib/messages";
 
-import { uploadAttachment } from "@/lib/extras/attachments";
-import { isValidGifId } from "@/lib/extras/gifs";
+import { uploadAttachment } from "@/lib/attachments";
 
-const MAX_MESSAGE_LENGTH = 5000;
+/* -------------------- INITIAL STATE -------------------- */
 
 const CHAT_STATE = {
   activeChatId: null,
@@ -29,12 +29,16 @@ const INITIAL_STATE = {
   sending: false,
 };
 
+/* -------------------- REQUEST MANAGEMENT -------------------- */
+
 let generation = 0;
 let chatRequestId = 0;
 let conversationRequest = null;
 let refreshPending = false;
 
 const readRequests = new Map();
+
+/* -------------------- MESSAGE HELPERS -------------------- */
 
 function sameItems(a, b) {
   return (
@@ -72,10 +76,12 @@ function insertMessage(messages, message) {
 
   const last = messages.at(-1);
 
+  // Fast path for chronological messages.
   if (!last || compareMessages(last, message) <= 0) {
     return [...messages, message];
   }
 
+  // Binary search for out-of-order messages.
   let low = 0;
   let high = messages.length;
 
@@ -95,6 +101,8 @@ function insertMessage(messages, message) {
 
   return next;
 }
+
+/* -------------------- CONVERSATION HELPERS -------------------- */
 
 function reconcileConversations(previous, incoming) {
   const byId = new Map(
@@ -120,27 +128,12 @@ function canSendMessage(state, chatId) {
   );
 }
 
-function validateMessage(content, file, userId, gifId) {
-  if (content.length > MAX_MESSAGE_LENGTH) {
-    return "Message is too long";
-  }
-
-  if (file && gifId) {
-    return "Cannot send a GIF and a file together";
-  }
-
-  if (gifId !== null && !isValidGifId(gifId)) {
-    return "Invalid GIF ID";
-  }
-
-  if (file && !userId) {
-    return "Missing user information";
-  }
-
-  return null;
-}
+/* -------------------- STORE -------------------- */
 
 const useChatStore = create((set, get) => {
+
+  /* -------------------- INTERNAL HELPERS -------------------- */
+
   function createChatGuard(chatId) {
     const currentGeneration = generation;
     const requestId = chatRequestId;
@@ -165,6 +158,8 @@ const useChatStore = create((set, get) => {
       error: error?.message || fallback,
     });
   }
+
+  /* -------------------- CONVERSATIONS -------------------- */
 
   function fetchConversations() {
     if (conversationRequest) {
@@ -232,6 +227,8 @@ const useChatStore = create((set, get) => {
     return request;
   }
 
+  /* -------------------- OPEN CHAT -------------------- */
+
   async function openChat(chatId) {
     chatRequestId++;
 
@@ -249,7 +246,10 @@ const useChatStore = create((set, get) => {
       if (!isCurrent()) return;
 
       set((state) => ({
-        messages: mergeMessages(state.messages, messages),
+        messages: mergeMessages(
+          state.messages,
+          messages
+        ),
         loading: false,
       }));
 
@@ -264,6 +264,8 @@ const useChatStore = create((set, get) => {
       }
     }
   }
+
+  /* -------------------- SYNCHRONISE MESSAGES -------------------- */
 
   async function syncMessages() {
     const chatId = get().activeChatId;
@@ -295,6 +297,8 @@ const useChatStore = create((set, get) => {
     }
   }
 
+  /* -------------------- RECEIVE MESSAGE -------------------- */
+
   function receiveMessage(message) {
     const state = get();
 
@@ -314,6 +318,8 @@ const useChatStore = create((set, get) => {
       set({ messages });
     }
   }
+
+  /* -------------------- READ RECEIPTS -------------------- */
 
   function markRead(chatId) {
     if (!chatId) return Promise.resolve();
@@ -339,7 +345,9 @@ const useChatStore = create((set, get) => {
 
           await markChatRead(chatId);
 
-          if (currentGeneration !== generation) return;
+          if (currentGeneration !== generation) {
+            return;
+          }
 
           if (entry.pending) continue;
 
@@ -350,7 +358,10 @@ const useChatStore = create((set, get) => {
       })
       .catch((error) => {
         if (currentGeneration === generation) {
-          setError(error, "Failed to mark messages as read");
+          setError(
+            error,
+            "Failed to mark messages as read"
+          );
         }
       })
       .finally(() => {
@@ -364,24 +375,31 @@ const useChatStore = create((set, get) => {
     return entry.promise;
   }
 
+  /* -------------------- SEND MESSAGE -------------------- */
+
   async function send(
     content,
     attachmentFile = null,
     userId = null,
     gifId = null
   ) {
-    const message = content.trim();
+    const state = get();
 
     const {
       activeChatId: chatId,
       sending,
       replyTo,
-    } = get();
+    } = state;
+
+    if (!chatId || sending) {
+      return false;
+    }
 
     if (
-      !chatId ||
-      sending ||
-      (!message && !attachmentFile && !gifId)
+      typeof content === "string" &&
+      !content.trim() &&
+      !attachmentFile &&
+      !gifId
     ) {
       return false;
     }
@@ -389,17 +407,26 @@ const useChatStore = create((set, get) => {
     const unavailable =
       "Messaging is unavailable in this conversation";
 
-    const validationError = !canSendMessage(get(), chatId)
-      ? unavailable
-      : validateMessage(
-          message,
-          attachmentFile,
-          userId,
-          gifId
-        );
+    let message;
 
-    if (validationError) {
-      set({ error: validationError });
+    // Validate before uploading any attachments.
+    try {
+      if (!canSendMessage(state, chatId)) {
+        throw new Error(unavailable);
+      }
+
+      message = validateMessage(
+        content,
+        attachmentFile,
+        gifId
+      );
+
+      if (attachmentFile && !userId) {
+        throw new Error("Missing user information");
+      }
+    } catch (error) {
+      setError(error, "Invalid message");
+
       return false;
     }
 
@@ -424,6 +451,7 @@ const useChatStore = create((set, get) => {
           })
         : null;
 
+      // Ignore operations belonging to a previous session.
       if (currentGeneration !== generation) {
         return false;
       }
@@ -449,6 +477,7 @@ const useChatStore = create((set, get) => {
 
       const current = get();
 
+      // Do not clear a newly selected reply.
       if (
         current.activeChatId === chatId &&
         current.replyTo === replyTo &&
@@ -466,6 +495,7 @@ const useChatStore = create((set, get) => {
           setError(error, "Failed to send message");
         }
 
+        // Refresh permissions after an authorization failure.
         if (error?.code === "42501") {
           void get().fetchConversations();
         }
@@ -479,56 +509,68 @@ const useChatStore = create((set, get) => {
     }
   }
 
+  /* -------------------- CLOSE CHAT -------------------- */
+
+  function closeChat(chatId) {
+    if (get().activeChatId !== chatId) return;
+
+    chatRequestId++;
+
+    set({ ...CHAT_STATE });
+  }
+
+  /* -------------------- REPLIES -------------------- */
+
+  function setReplyTo(message) {
+    if (
+      message &&
+      message.conversation_id !== get().activeChatId
+    ) {
+      return;
+    }
+
+    const replyTo = message ?? null;
+
+    if (get().replyTo !== replyTo) {
+      set({ replyTo });
+    }
+  }
+
+  function clearReply() {
+    if (get().replyTo !== null) {
+      set({ replyTo: null });
+    }
+  }
+
+  /* -------------------- RESET -------------------- */
+
+  function reset() {
+    generation++;
+    chatRequestId++;
+
+    conversationRequest = null;
+    refreshPending = false;
+
+    readRequests.clear();
+
+    set({ ...INITIAL_STATE });
+  }
+
+  /* -------------------- PUBLIC INTERFACE -------------------- */
+
   return {
     ...INITIAL_STATE,
 
     fetchConversations,
     openChat,
+    closeChat,
     syncMessages,
     receiveMessage,
     markRead,
     send,
-
-    closeChat: (chatId) => {
-      if (get().activeChatId !== chatId) return;
-
-      chatRequestId++;
-
-      set({ ...CHAT_STATE });
-    },
-
-    setReplyTo: (message) => {
-      if (
-        message &&
-        message.conversation_id !== get().activeChatId
-      ) {
-        return;
-      }
-
-      const replyTo = message ?? null;
-
-      if (get().replyTo !== replyTo) {
-        set({ replyTo });
-      }
-    },
-
-    clearReply: () => {
-      if (get().replyTo !== null) {
-        set({ replyTo: null });
-      }
-    },
-
-    reset: () => {
-      generation++;
-      chatRequestId++;
-
-      conversationRequest = null;
-      refreshPending = false;
-
-      readRequests.clear();
-
-      set({ ...INITIAL_STATE });
-    },
+    setReplyTo,
+    clearReply,
+    reset,
   };
 });
 

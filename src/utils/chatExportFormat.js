@@ -1,6 +1,7 @@
 // src/utils/chatExportFormat.js
 
 import { formatFileSize } from "@/utils/fileUtils";
+import { truncateText } from "@/utils/messageUtils";
 
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-AU", {
   dateStyle: "medium",
@@ -77,9 +78,7 @@ export function formatExportReply(
 ) {
   if (!message.reply_to_id) return null;
 
-  const original = messageMap.get(
-    message.reply_to_id
-  );
+  const original = messageMap.get(message.reply_to_id);
 
   if (!original) {
     return "> Reply to an unavailable message";
@@ -94,12 +93,5 @@ export function formatExportReply(
     .replace(/\s+/g, " ")
     .trim();
 
-  const characters = Array.from(preview);
-
-  const shortPreview =
-    characters.length > 150
-      ? characters.slice(0, 149).join("") + "…"
-      : preview;
-
-  return `> Reply to ${sender}: ${shortPreview}`;
+  return `> Reply to ${sender}: ${truncateText(preview, 150)}`;
 }

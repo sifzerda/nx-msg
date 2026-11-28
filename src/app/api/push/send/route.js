@@ -5,7 +5,7 @@ import { timingSafeEqual } from "node:crypto";
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWebPush } from "@/lib/webPush";
-import { getNotificationPreview } from "@/utils/notificationPreview";
+import { getNotificationPreview } from "@/utils/messageUtils";
 
 export const runtime = "nodejs";
 

@@ -16,14 +16,10 @@ import {
   ShieldCheck,
   LoaderCircle,
 } from "lucide-react";
-
+import { useShallow } from "zustand/react/shallow";
 import useBlockStore from "@/store/useBlockStore";
 
-function ChatBlockMenu({
-  userId,
-  displayName,
-  isBlocked,
-}) {
+function ChatBlockMenu({ userId, displayName, isBlocked}) {
   const menuRef = useRef(null);
   const dialogRef = useRef(null);
 
@@ -31,10 +27,15 @@ function ChatBlockMenu({
   const [confirmAction, setConfirmAction] = useState(null);
   const [error, setError] = useState(null);
 
-  const block = useBlockStore((state) => state.block);
-  const unblock = useBlockStore((state) => state.unblock);
+  const { block, unblock, pendingAction } = useBlockStore(
+    useShallow((state) => ({
+      block: state.block,
+      unblock: state.unblock,
+      pendingAction: state.pendingUsers[userId],
+    }))
+  )
+
   const dialogTitleId = useId();
-  const pendingAction = useBlockStore((state) => state.pendingUsers[userId]);
   const submittingRef = useRef(false);
   const isPending = Boolean(pendingAction);
 

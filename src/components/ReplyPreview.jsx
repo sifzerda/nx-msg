@@ -4,7 +4,7 @@
 
 import { memo } from "react";
 import { Reply, X } from "lucide-react";
-import { getMessagePreview } from "@/utils/messagePreview";
+import { getMessagePreview } from "@/utils/messageUtils";
 
 function ReplyPreview({
   message,

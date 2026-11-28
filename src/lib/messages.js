@@ -2,11 +2,11 @@
 
 import { createClient } from "@/lib/supabase/client";
 import { isValidGifId } from "@/lib/extras/gifs";
+import { MAX_MESSAGE_LENGTH } from "@/constants/emojis";
 
 const supabase = createClient();
 
 const MESSAGE_LIMIT = 100;
-const MAX_MESSAGE_LENGTH = 5000;
 
 const MESSAGE_COLUMNS = [
   "id",
@@ -65,13 +65,48 @@ function subscribeToChanges(
       ({ new: record }) => callback(record)
     );
 
-  const channel = onStatus === undefined
-    ? subscription.subscribe()
-    : subscription.subscribe(onStatus);
+  const channel =
+    onStatus === undefined
+      ? subscription.subscribe()
+      : subscription.subscribe(onStatus);
 
   return () => {
     void supabase.removeChannel(channel);
   };
+}
+
+/* -------------------- VALIDATION -------------------- */
+
+export function validateMessage(
+  content,
+  attachment = null,
+  gifId = null
+) {
+  if (typeof content !== "string") {
+    throw new Error("Invalid message content");
+  }
+
+  const message = content.trim();
+
+  if (message.length > MAX_MESSAGE_LENGTH) {
+    throw new Error("Message is too long");
+  }
+
+  if (!message && !attachment && !gifId) {
+    throw new Error("Message cannot be empty");
+  }
+
+  if (attachment && gifId) {
+    throw new Error(
+      "A message cannot contain both a GIF and an attachment"
+    );
+  }
+
+  if (gifId !== null && !isValidGifId(gifId)) {
+    throw new Error("Invalid GIF ID");
+  }
+
+  return message;
 }
 
 /* -------------------- CONVERSATIONS -------------------- */
@@ -84,7 +119,10 @@ export function startChat(contactId) {
 
 export async function createGroupChat(name, memberIds) {
   const groupName = name.trim();
-  const members = [...new Set(memberIds.filter(Boolean))];
+
+  const members = [
+    ...new Set(memberIds.filter(Boolean)),
+  ];
 
   if (!groupName || groupName.length > 100) {
     throw new Error(
@@ -143,30 +181,6 @@ export async function getMessagesByIds(
 }
 
 /* -------------------- SEND MESSAGE -------------------- */
-
-function validateMessage(content, attachment, gifId) {
-  const message = content.trim();
-
-  if (message.length > MAX_MESSAGE_LENGTH) {
-    throw new Error("Message is too long");
-  }
-
-  if (!message && !attachment && !gifId) {
-    throw new Error("Message cannot be empty");
-  }
-
-  if (attachment && gifId) {
-    throw new Error(
-      "A message cannot contain both a GIF and an attachment"
-    );
-  }
-
-  if (gifId !== null && !isValidGifId(gifId)) {
-    throw new Error("Invalid GIF ID");
-  }
-
-  return message;
-}
 
 export async function sendMessage(
   conversationId,
@@ -227,7 +241,6 @@ export function subscribeToAllMessages(
   );
 }
 
-// Retained for backwards compatibility.
 export function subscribeToMessages(
   conversationId,
   onMessage
