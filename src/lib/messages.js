@@ -215,12 +215,6 @@ export async function markChatRead(conversationId) {
   });
 }
 
-export function getRecipientReadAt(conversationId) {
-  return rpc("get_recipient_read_at", {
-    chat_id: conversationId,
-  });
-}
-
 /* -------------------- REALTIME -------------------- */
 
 export function subscribeToAllMessages(

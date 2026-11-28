@@ -60,7 +60,6 @@ const {
     getMessagesByIds,
     sendMessage,
     markChatRead,
-    getRecipientReadAt,
     subscribeToAllMessages,
     subscribeToReadReceipts,
     validateMessage,
@@ -1537,53 +1536,6 @@ describe("Messaging API - read receipts", () => {
         );
     });
 
-    test("retrieves the recipient read timestamp", async () => {
-        const timestamp =
-            "2026-01-01T12:00:00Z";
-
-        mockRpc.mockResolvedValue({
-            data: timestamp,
-            error: null,
-        });
-
-        const result =
-            await getRecipientReadAt(CHAT_ID);
-
-        expect(result).toBe(timestamp);
-
-        expect(mockRpc).toHaveBeenCalledWith(
-            "get_recipient_read_at",
-            {
-                chat_id: CHAT_ID,
-            }
-        );
-    });
-
-    test("handles unread conversations", async () => {
-        mockRpc.mockResolvedValue({
-            data: null,
-            error: null,
-        });
-
-        expect(
-            await getRecipientReadAt(CHAT_ID)
-        ).toBeNull();
-    });
-
-    test("propagates read receipt retrieval errors", async () => {
-        mockRpc.mockResolvedValue({
-            data: null,
-            error: new Error(
-                "Unable to retrieve read receipt"
-            ),
-        });
-
-        await expect(
-            getRecipientReadAt(CHAT_ID)
-        ).rejects.toThrow(
-            "Unable to retrieve read receipt"
-        );
-    });
 });
 
 /* -------------------- REALTIME SUBSCRIPTIONS -------------------- */
