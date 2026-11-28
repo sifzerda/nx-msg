@@ -33,7 +33,9 @@ const INITIAL_STATE = {
 
 let generation = 0;
 let chatRequestId = 0;
+
 let conversationRequest = null;
+let messageSyncRequest = null;
 let refreshPending = false;
 
 const readRequests = new Map();
@@ -128,6 +130,13 @@ function canSendMessage(state, chatId) {
   );
 }
 
+function isPageVisible() {
+  return (
+    typeof document !== "undefined" &&
+    document.visibilityState === "visible"
+  );
+}
+
 /* -------------------- STORE -------------------- */
 
 const useChatStore = create((set, get) => {
@@ -161,9 +170,12 @@ const useChatStore = create((set, get) => {
 
   /* -------------------- CONVERSATIONS -------------------- */
 
-  function fetchConversations() {
+  function fetchConversations({ force = false } = {}) {
     if (conversationRequest) {
-      refreshPending = true;
+      if (force) {
+        refreshPending = true;
+      }
+
       return conversationRequest;
     }
 
@@ -183,7 +195,8 @@ const useChatStore = create((set, get) => {
               return false;
             }
 
-            // A newer refresh may contain updated permissions.
+            // A mutation occurred during the request.
+            // Retrieve a fresh authoritative snapshot.
             if (refreshPending) continue;
 
             const current = get().conversations;
@@ -214,7 +227,10 @@ const useChatStore = create((set, get) => {
           if (!refreshPending) break;
         }
 
-        return success && currentGeneration === generation;
+        return (
+          success &&
+          currentGeneration === generation
+        );
       })
       .finally(() => {
         if (conversationRequest === request) {
@@ -253,7 +269,9 @@ const useChatStore = create((set, get) => {
         loading: false,
       }));
 
-      await get().markRead(chatId);
+      if (isPageVisible()) {
+        await get().markRead(chatId);
+      }
     } catch (error) {
       if (isCurrent()) {
         setError(error, "Failed to load messages");
@@ -267,113 +285,163 @@ const useChatStore = create((set, get) => {
 
   /* -------------------- SYNCHRONISE MESSAGES -------------------- */
 
-  async function syncMessages() {
-    const chatId = get().activeChatId;
+  /* -------------------- SYNCHRONISE MESSAGES -------------------- */
 
-    if (!chatId) return;
+function syncMessages() {
+  const chatId = get().activeChatId;
 
-    const isCurrent = createChatGuard(chatId);
+  if (!chatId) {
+    return Promise.resolve(false);
+  }
 
-    try {
+  const currentRequestId = chatRequestId;
+
+  if (
+    messageSyncRequest?.chatId === chatId &&
+    messageSyncRequest?.requestId === currentRequestId
+  ) {
+    return messageSyncRequest.promise;
+  }
+
+  const isCurrent = createChatGuard(chatId);
+
+  const entry = {
+    chatId,
+    requestId: currentRequestId,
+    promise: null,
+  };
+
+  entry.promise = Promise.resolve()
+    .then(async () => {
+      if (!isCurrent()) return false;
+
       const incoming = await getMessages(chatId);
 
-      if (!isCurrent()) return;
+      if (!isCurrent()) return false;
 
       updateMessages(incoming);
 
-      if (
-        typeof document !== "undefined" &&
-        document.visibilityState === "visible"
-      ) {
-        void get().markRead(chatId);
-      }
-    } catch (error) {
+      return true;
+    })
+    .catch((error) => {
       if (isCurrent()) {
         console.error(
           "Failed to synchronise messages:",
           error
         );
       }
-    }
-  }
+
+      return false;
+    })
+    .finally(() => {
+      if (messageSyncRequest === entry) {
+        messageSyncRequest = null;
+      }
+    });
+
+  messageSyncRequest = entry;
+
+  return entry.promise;
+}
 
   /* -------------------- RECEIVE MESSAGE -------------------- */
 
-  function receiveMessage(message) {
-    const state = get();
+  /* -------------------- RECEIVE MESSAGE -------------------- */
 
-    if (
-      !message?.id ||
-      message.conversation_id !== state.activeChatId
-    ) {
-      return;
-    }
+function receiveMessage(message) {
+  const state = get();
 
-    const messages = insertMessage(
-      state.messages,
-      message
-    );
-
-    if (messages !== state.messages) {
-      set({ messages });
-    }
+  if (
+    !message?.id ||
+    message.conversation_id !== state.activeChatId
+  ) {
+    return false;
   }
+
+  const messages = insertMessage(
+    state.messages,
+    message
+  );
+
+  if (messages === state.messages) {
+    return false;
+  }
+
+  set({ messages });
+
+  return true;
+}
 
   /* -------------------- READ RECEIPTS -------------------- */
 
-  function markRead(chatId) {
-    if (!chatId) return Promise.resolve();
-
-    const existing = readRequests.get(chatId);
-
-    if (existing) {
-      existing.pending = true;
-      return existing.promise;
-    }
-
-    const currentGeneration = generation;
-
-    const entry = {
-      pending: false,
-      promise: null,
-    };
-
-    entry.promise = Promise.resolve()
-      .then(async () => {
-        while (currentGeneration === generation) {
-          entry.pending = false;
-
-          await markChatRead(chatId);
-
-          if (currentGeneration !== generation) {
-            return;
-          }
-
-          if (entry.pending) continue;
-
-          await get().fetchConversations();
-
-          if (!entry.pending) break;
-        }
-      })
-      .catch((error) => {
-        if (currentGeneration === generation) {
-          setError(
-            error,
-            "Failed to mark messages as read"
-          );
-        }
-      })
-      .finally(() => {
-        if (readRequests.get(chatId) === entry) {
-          readRequests.delete(chatId);
-        }
-      });
-
-    readRequests.set(chatId, entry);
-
-    return entry.promise;
+function markRead(chatId) {
+  if (!chatId) {
+    return Promise.resolve(false);
   }
+
+  const existing = readRequests.get(chatId);
+
+  if (existing) {
+    existing.pending = true;
+    return existing.promise;
+  }
+
+  const currentGeneration = generation;
+
+  const entry = {
+    pending: false,
+    promise: null,
+  };
+
+  entry.promise = Promise.resolve()
+    .then(async () => {
+      while (currentGeneration === generation) {
+        entry.pending = false;
+
+        await markChatRead(chatId);
+
+        if (currentGeneration !== generation) {
+          return false;
+        }
+
+        if (entry.pending) continue;
+
+        const refreshed =
+          await get().fetchConversations({
+            force: true,
+          });
+
+        if (currentGeneration !== generation) {
+          return false;
+        }
+
+        if (!entry.pending) {
+          return refreshed === true;
+        }
+      }
+
+      return false;
+    })
+    .catch((error) => {
+      if (currentGeneration === generation) {
+        setError(
+          error,
+          "Failed to mark messages as read"
+        );
+      }
+
+      return false;
+    })
+    .finally(() => {
+      if (readRequests.get(chatId) === entry) {
+        readRequests.delete(chatId);
+      }
+    });
+
+  readRequests.set(chatId, entry);
+
+  return entry.promise;
+}
 
   /* -------------------- SEND MESSAGE -------------------- */
 
@@ -404,8 +472,7 @@ const useChatStore = create((set, get) => {
       return false;
     }
 
-    const unavailable =
-      "Messaging is unavailable in this conversation";
+    const unavailable = "Messaging is unavailable in this conversation";
 
     let message;
 
@@ -445,10 +512,10 @@ const useChatStore = create((set, get) => {
     try {
       const attachment = attachmentFile
         ? await uploadAttachment({
-            conversationId: chatId,
-            userId,
-            file: attachmentFile,
-          })
+          conversationId: chatId,
+          userId,
+          file: attachmentFile,
+        })
         : null;
 
       // Ignore operations belonging to a previous session.
@@ -486,7 +553,7 @@ const useChatStore = create((set, get) => {
         set({ replyTo: null });
       }
 
-      void get().fetchConversations();
+      void get().fetchConversations({ force: true });
 
       return true;
     } catch (error) {
@@ -497,7 +564,7 @@ const useChatStore = create((set, get) => {
 
         // Refresh permissions after an authorization failure.
         if (error?.code === "42501") {
-          void get().fetchConversations();
+          void get().fetchConversations({ force: true });
         }
       }
 
@@ -544,17 +611,19 @@ const useChatStore = create((set, get) => {
 
   /* -------------------- RESET -------------------- */
 
-  function reset() {
-    generation++;
-    chatRequestId++;
+function reset() {
+  generation++;
+  chatRequestId++;
 
-    conversationRequest = null;
-    refreshPending = false;
+  conversationRequest = null;
+  messageSyncRequest = null;
 
-    readRequests.clear();
+  refreshPending = false;
 
-    set({ ...INITIAL_STATE });
-  }
+  readRequests.clear();
+
+  set({ ...INITIAL_STATE });
+}
 
   /* -------------------- PUBLIC INTERFACE -------------------- */
 

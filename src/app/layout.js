@@ -1,11 +1,12 @@
 // src/app/layout.js
 
 import { Geist, Geist_Mono } from "next/font/google";
-import { createClient } from "@/lib/supabase/server";
+
+import { getCurrentUser } from "@/lib/supabase/server";
 
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
-import PushNotificationInitializer from "@/components/PushNotificationInitializer";
+import SessionInitializer from "@/components/SessionInitializer";
 
 import ThemeProvider from "@/themes/ThemeProvider";
 import { APPEARANCE_SCRIPT } from "@/themes/appearanceScript";
@@ -28,37 +29,13 @@ export const metadata = {
 };
 
 export default async function RootLayout({ children }) {
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  let profile = null;
-
-  if (user) {
-    const { data } = await supabase
-      .from("profiles")
-      .select("id, username, display_name")
-      .eq("id", user.id)
-      .maybeSingle();
-
-    profile = data;
-  }
-
-  const currentUser = user
-    ? {
-        id: user.id,
-        username: profile?.username ?? "",
-        display_name: profile?.display_name ?? "User",
-      }
-    : null;
+  const currentUser = await getCurrentUser();
 
   return (
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${geistSans.variable} ${geistMono.variable}`}
+      className={`${geistSans.variable} ${geistMono.variable} overflow-clip`}
     >
       <head>
         <script
@@ -69,15 +46,18 @@ export default async function RootLayout({ children }) {
         />
       </head>
 
-      <body className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
+      <body className="flex h-dvh min-h-dvh flex-col overflow-clip bg-background text-foreground">
         <ThemeProvider>
-          <PushNotificationInitializer
+          <SessionInitializer
             userId={currentUser?.id ?? null}
           />
 
-          <Header user={currentUser} />
+          <Header
+            key={currentUser?.id ?? "guest"}
+            user={currentUser}
+          />
 
-          <main className="min-h-0 flex-1 overflow-hidden">
+          <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-clip">
             {children}
           </main>
 

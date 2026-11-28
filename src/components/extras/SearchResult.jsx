@@ -3,10 +3,21 @@
 "use client";
 
 import { memo, useMemo } from "react";
-import { ArrowUpRight, Clock3 } from "lucide-react";
+
+import {
+  ArrowUpRight,
+  Clock3,
+  Film,
+} from "lucide-react";
+
 import { getMessagePreview } from "@/utils/messageUtils";
-import SearchAttachmentPreview from "./SearchAttachmentPreview";
-import SearchGifPreview from "./SearchGifPreview";
+
+import {
+  getFileInfo,
+  formatFileSize,
+} from "@/utils/fileUtils";
+
+/* -------------------- CONSTANTS -------------------- */
 
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-AU", {
   day: "numeric",
@@ -16,6 +27,8 @@ const DATE_FORMATTER = new Intl.DateTimeFormat("en-AU", {
   minute: "2-digit",
 });
 
+/* -------------------- SEARCH HIGHLIGHTING -------------------- */
+
 function escapeRegex(value) {
   return value.replace(
     /[.*+?^${}()|[\]\\]/g,
@@ -23,60 +36,121 @@ function escapeRegex(value) {
   );
 }
 
-const HighlightedText = memo(function HighlightedText({
-  text = "",
-  query = "",
-}) {
-  const parts = useMemo(() => {
-    const terms = [
-      ...new Set(
-        query
-          .trim()
-          .match(/-?"[^"]+"|\S+/g)
-          ?.filter((term) => !term.startsWith("-"))
-          .filter((term) => term.toUpperCase() !== "OR")
-          .map((term) => term.replace(/^"+|"+$/g, ""))
-          .filter((term) => term.length >= 2) ?? []
-      ),
-    ].sort((a, b) => b.length - a.length);
+function createHighlightPattern(query = "") {
+  const tokens =
+    query.trim().match(/-?"[^"]+"|\S+/g) ?? [];
 
-    if (!terms.length) {
-      return [
-        {
-          text,
-          highlighted: false,
-        },
-      ];
-    }
+  const terms = [
+    ...new Set(
+      tokens
+        .filter((term) => !term.startsWith("-"))
+        .filter((term) => term.toUpperCase() !== "OR")
+        .map((term) => term.replace(/^"+|"+$/g, ""))
+        .filter((term) => term.length >= 2)
+    ),
+  ].sort((a, b) => b.length - a.length);
 
-    const pattern = new RegExp(
-      `(${terms.map(escapeRegex).join("|")})`,
-      "gi"
-    );
+  return terms.length
+    ? new RegExp(
+        `(${terms.map(escapeRegex).join("|")})`,
+        "gi"
+      )
+    : null;
+}
 
-    return text
-      .split(pattern)
-      .map((part, index) => ({
-        text: part,
-        highlighted: index % 2 === 1,
-      }));
-  }, [text, query]);
+function HighlightedText({ text = "", pattern }) {
+  if (!pattern) return text;
 
-  return parts.map((part, index) =>
-    part.highlighted ? (
+  return text.split(pattern).map((part, index) =>
+    index % 2 === 1 ? (
       <mark
         key={index}
         className="rounded-sm bg-yellow-400/25 text-yellow-300"
       >
-        {part.text}
+        {part}
       </mark>
     ) : (
-      <span key={index}>
-        {part.text}
-      </span>
+      part
     )
   );
-});
+}
+
+/* -------------------- MEDIA PREVIEW -------------------- */
+
+function MediaPreview({
+  icon: Icon,
+  color,
+  title,
+  description,
+  pattern,
+  isGif = false,
+}) {
+  return (
+    <span
+      className={`mt-2 flex min-w-0 items-center gap-3 rounded-lg p-3 ${
+        isGif
+          ? "border border-gray-700 bg-gray-800/60"
+          : "bg-gray-950/60"
+      }`}
+    >
+      <span
+        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
+          isGif
+            ? "bg-blue-500/10"
+            : "bg-gray-800"
+        }`}
+      >
+        <Icon
+          size={isGif ? 19 : 23}
+          className={color}
+        />
+      </span>
+
+      <span className="min-w-0 flex-1">
+        <span className="block break-all text-xs font-medium text-gray-200">
+          <HighlightedText
+            text={title}
+            pattern={pattern}
+          />
+        </span>
+
+        <span className="mt-1 block text-[11px] text-gray-500">
+          {description}
+        </span>
+      </span>
+    </span>
+  );
+}
+
+/* -------------------- ATTACHMENT PREVIEW -------------------- */
+
+function AttachmentPreview({ message, pattern }) {
+  const name =
+    message.attachment_name || "Attachment";
+
+  const {
+    icon,
+    color,
+    label,
+  } = getFileInfo(name);
+
+  const size =
+    formatFileSize(message.attachment_size);
+
+  return (
+    <MediaPreview
+      icon={icon}
+      color={color}
+      title={name}
+      description={
+        size ? `${label} · ${size}` : label
+      }
+      pattern={pattern}
+    />
+  );
+}
+
+/* -------------------- SEARCH RESULT -------------------- */
 
 function SearchResult({
   message,
@@ -85,6 +159,11 @@ function SearchResult({
   canJump,
   onSelect,
 }) {
+  const pattern = useMemo(
+    () => createHighlightPattern(query),
+    [query]
+  );
+
   const isOwn = message.sender_id === userId;
 
   const senderName = isOwn
@@ -99,45 +178,39 @@ function SearchResult({
     ? ""
     : DATE_FORMATTER.format(date);
 
-  const content = message.content?.trim() || "";
+  const hasAttachment =
+    Boolean(message.attachment_path);
 
-  const hasAttachment = Boolean(message.attachment_path);
   const hasGif = Boolean(message.gif_id);
-  const hasMedia = hasAttachment || hasGif;
 
-  // Media messages display only their actual caption.
-  // Ordinary messages use the standard preview utility.
-
-  const preview = hasMedia
-    ? content
+  const preview = hasAttachment || hasGif
+    ? message.content?.trim() || ""
     : getMessagePreview(message);
 
-  const showText = Boolean(preview);
+  const NavigationIcon = canJump
+    ? ArrowUpRight
+    : Clock3;
 
   return (
     <button
       type="button"
       onClick={() => onSelect?.(message.id)}
       disabled={!canJump}
-      className={[
-        "block w-full min-w-0 rounded-xl border",
-        "border-gray-800 bg-gray-900 p-3 text-left",
-        "transition-colors",
+      className={`block w-full min-w-0 rounded-xl border border-gray-800 bg-gray-900 p-3 text-left transition-colors ${
         canJump
           ? "cursor-pointer hover:border-blue-500/50 hover:bg-gray-800"
-          : "cursor-default",
-      ].join(" ")}
+          : "cursor-default"
+      }`}
     >
       {/* Sender and timestamp */}
 
       <span className="mb-2 flex min-w-0 items-center gap-2">
         <span
-          className={[
-            "min-w-0 flex-1 truncate text-xs font-semibold",
+          className={`min-w-0 flex-1 truncate text-xs font-semibold ${
             isOwn
               ? "text-blue-400"
-              : "text-gray-300",
-          ].join(" ")}
+              : "text-gray-300"
+          }`}
         >
           {senderName}
         </span>
@@ -152,11 +225,11 @@ function SearchResult({
 
       {/* Message text or caption */}
 
-      {showText && (
+      {preview && (
         <span className="block line-clamp-4 whitespace-pre-wrap wrap-break-word text-sm text-gray-200 [overflow-wrap:anywhere]">
           <HighlightedText
             text={preview}
-            query={query}
+            pattern={pattern}
           />
         </span>
       )}
@@ -164,49 +237,48 @@ function SearchResult({
       {/* GIF preview */}
 
       {hasGif && (
-        <SearchGifPreview
-          message={message}
-          query={query}
-          HighlightedText={HighlightedText}
+        <MediaPreview
+          icon={Film}
+          color="text-blue-400"
+          title="GIF"
+          description="Animated image"
+          pattern={pattern}
+          isGif
         />
       )}
 
-      {/* Image or file attachment */}
+      {/* Image or file preview */}
 
       {hasAttachment && (
-        <SearchAttachmentPreview
+        <AttachmentPreview
           message={message}
-          query={query}
-          HighlightedText={HighlightedText}
+          pattern={pattern}
         />
       )}
 
       {/* Navigation */}
 
       <span className="mt-3 flex items-center gap-1.5">
-        {canJump ? (
-          <>
-            <ArrowUpRight
-              size={13}
-              className="text-blue-400"
-            />
+        <NavigationIcon
+          size={13}
+          className={
+            canJump
+              ? "text-blue-400"
+              : "text-gray-600"
+          }
+        />
 
-            <span className="text-[11px] text-blue-400">
-              Jump to message
-            </span>
-          </>
-        ) : (
-          <>
-            <Clock3
-              size={13}
-              className="text-gray-600"
-            />
-
-            <span className="text-[11px] text-gray-500">
-              Older message
-            </span>
-          </>
-        )}
+        <span
+          className={`text-[11px] ${
+            canJump
+              ? "text-blue-400"
+              : "text-gray-500"
+          }`}
+        >
+          {canJump
+            ? "Jump to message"
+            : "Older message"}
+        </span>
       </span>
     </button>
   );

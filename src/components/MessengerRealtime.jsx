@@ -3,190 +3,345 @@
 "use client";
 
 import { useEffect } from "react";
+
 import { subscribeToAllMessages } from "@/lib/messages";
 import { subscribeToPresence } from "@/lib/presence";
+
 import useChatStore from "@/store/useChatStore";
 import usePresenceStore from "@/store/usePresenceStore";
 
-/* -------------------- CONSTANTS -------------------- */
+const REFRESH_DELAY = 250;
+const MAX_RECENT_MESSAGES = 500;
 
-const REFRESH_DELAY = 150;
-
-/* -------------------- COMPONENT -------------------- */
+const getChat = useChatStore.getState;
+const getPresence = usePresenceStore.getState;
 
 export default function MessengerRealtime({ userId }) {
   useEffect(() => {
     if (!userId) {
-      usePresenceStore.getState().reset();
+      getPresence().reset();
       return;
     }
 
     let active = true;
-    let refreshTimer = null;
+    let connected = false;
     let hasSubscribed = false;
 
-    /* -------------------- INITIALIZE PRESENCE -------------------- */
+    let refreshTimer = null;
+    let processing = false;
 
-    void usePresenceStore
-      .getState()
-      .initialize(userId);
+    let pendingRefresh = false;
+    let pendingRecovery = false;
+    let pendingReadChatId = null;
 
-    /* -------------------- RESTRICTION REFRESH -------------------- */
+    const recentMessages = new Set();
 
-    function refreshRestrictions(force = false) {
-      if (!active) return;
+    void getPresence().initialize(userId);
 
-      const presenceStore = usePresenceStore.getState();
+    /* -------------------- HELPERS -------------------- */
 
-      if (presenceStore.userId !== userId) {
-        return;
-      }
-
-      void presenceStore.fetchRestrictedUsers({
-        force,
-      });
+    function isVisible() {
+      return document.visibilityState === "visible";
     }
 
-    /* -------------------- CONVERSATION REFRESH -------------------- */
+    function hasPendingWork() {
+      return Boolean(
+        pendingRefresh ||
+        pendingRecovery ||
+        pendingReadChatId
+      );
+    }
 
-    function scheduleRefresh() {
-      if (!active || refreshTimer !== null) {
+    /* -------------------- PRESENCE -------------------- */
+
+    function refreshRestrictions(force = false) {
+      const presence = getPresence();
+
+      if (active && presence.userId === userId) {
+        void presence.fetchRestrictedUsers({ force });
+      }
+    }
+
+    function handlePresence(users) {
+      const presence = getPresence();
+
+      if (active && presence.userId === userId) {
+        presence.setOnlineUsers(users);
+      }
+    }
+
+    /* -------------------- SCHEDULING -------------------- */
+
+    function scheduleUpdates() {
+      if (
+        !active ||
+        processing ||
+        refreshTimer !== null ||
+        !hasPendingWork()
+      ) {
         return;
       }
 
-      refreshTimer = setTimeout(() => {
-        refreshTimer = null;
+      refreshTimer = setTimeout(
+        flushUpdates,
+        REFRESH_DELAY
+      );
+    }
+
+    function scheduleRecovery() {
+      pendingRecovery = true;
+      scheduleUpdates();
+    }
+
+    /* -------------------- BATCHED UPDATES -------------------- */
+
+    async function flushUpdates() {
+      refreshTimer = null;
+
+      if (!active || processing) return;
+
+      processing = true;
+
+      const recover = pendingRecovery;
+      const refresh = pendingRefresh;
+
+      let readChatId = pendingReadChatId;
+
+      pendingRecovery = false;
+      pendingRefresh = false;
+      pendingReadChatId = null;
+
+      try {
+        if (recover) {
+          const chatId = getChat().activeChatId;
+
+          if (chatId) {
+            const synced =
+              await getChat().syncMessages();
+
+            if (!active) return;
+
+            if (
+              synced &&
+              getChat().activeChatId === chatId &&
+              isVisible()
+            ) {
+              readChatId = chatId;
+            }
+          }
+        }
 
         if (!active) return;
 
-        void useChatStore
-          .getState()
-          .fetchConversations();
+        const canMarkRead =
+          readChatId &&
+          getChat().activeChatId === readChatId &&
+          isVisible();
 
-      }, REFRESH_DELAY);
+        if (canMarkRead) {
+          const refreshed =
+            await getChat().markRead(readChatId);
+
+          if (!active) return;
+
+          // markRead already refreshes summaries.
+          if (refreshed) return;
+        }
+
+        if (recover || refresh || readChatId) {
+          await getChat().fetchConversations({
+            force: true,
+          });
+        }
+      } catch (error) {
+        if (active) {
+          console.error(
+            "Messenger synchronization failed:",
+            error
+          );
+        }
+      } finally {
+        processing = false;
+
+        // Process events received while the previous
+        // synchronization was running.
+        scheduleUpdates();
+      }
     }
 
-    /* -------------------- MESSAGE HANDLING -------------------- */
+    /* -------------------- EVENT DEDUPLICATION -------------------- */
+
+    function isNewMessage(message) {
+      if (
+        !message?.id ||
+        !message.conversation_id ||
+        recentMessages.has(message.id)
+      ) {
+        return false;
+      }
+
+      recentMessages.add(message.id);
+
+      if (
+        recentMessages.size > MAX_RECENT_MESSAGES
+      ) {
+        recentMessages.delete(
+          recentMessages.values().next().value
+        );
+      }
+
+      return true;
+    }
+
+    /* -------------------- MESSAGES -------------------- */
 
     function handleMessage(message) {
-      if (!active) return;
+      if (!active || !isNewMessage(message)) {
+        return;
+      }
 
-      const store = useChatStore.getState();
-      const isActiveChat = message.conversation_id === store.activeChatId;
+      const store = getChat();
+
+      const isActiveChat =
+        message.conversation_id ===
+        store.activeChatId;
 
       if (isActiveChat) {
         store.receiveMessage(message);
       }
 
-      const shouldMarkRead = isActiveChat && message.sender_id !== userId && document.visibilityState === "visible";
-
-      if (shouldMarkRead) {
-        void store.markRead(message.conversation_id);
+      if (
+        isActiveChat &&
+        message.sender_id !== userId &&
+        isVisible()
+      ) {
+        pendingReadChatId =
+          message.conversation_id;
       } else {
-        scheduleRefresh();
+        pendingRefresh = true;
       }
+
+      scheduleUpdates();
     }
 
-    /* -------------------- PRESENCE SUBSCRIPTION -------------------- */
+    /* -------------------- CONNECTION -------------------- */
 
-    const unsubscribePresence = subscribeToPresence(userId, (users) => {
-        if (!active) return;
+    function handleStatus(status) {
+      if (!active) return;
 
-        const presenceStore = usePresenceStore.getState();
+      if (status === "SUBSCRIBED") {
+        if (connected) return;
 
-        if (presenceStore.userId !== userId) {
-          return;
-        }
+        connected = true;
 
-        presenceStore.setOnlineUsers(users);
-      });
+        refreshRestrictions(hasSubscribed);
 
-    /* -------------------- MESSAGE SUBSCRIPTION -------------------- */
+        hasSubscribed = true;
 
-    const unsubscribeMessages =
-      subscribeToAllMessages(
-        userId,
-        handleMessage,
-        (status) => {
-          if (!active) return;
+        scheduleRecovery();
 
-          if (status === "SUBSCRIBED") {
-            scheduleRefresh();
-
-            // Refresh restrictions after reconnection,
-            // but avoid duplicating the initial request.
-            if (hasSubscribed) {
-              refreshRestrictions();
-            }
-
-            hasSubscribed = true;
-
-            const store = useChatStore.getState();
-
-            if (store.activeChatId) {
-              void store.syncMessages();
-            }
-
-            return;
-          }
-
-          if (
-            status === "CHANNEL_ERROR" || status === "TIMED_OUT"
-          ) {
-            console.warn("Message subscription status:", status);
-          }
-        }
-      );
-
-    /* -------------------- BROWSER VISIBILITY -------------------- */
-
-    function handleVisibilityChange() {
-      if (
-        !active || document.visibilityState !== "visible"
-      ) {
         return;
       }
 
-      // Uses the cached result if it is still valid.
-      refreshRestrictions();
+      if (
+        status === "CHANNEL_ERROR" ||
+        status === "TIMED_OUT" ||
+        status === "CLOSED"
+      ) {
+        connected = false;
+
+        if (status !== "CLOSED") {
+          console.warn(
+            "Message subscription status:",
+            status
+          );
+        }
+      }
     }
 
-    /* -------------------- NETWORK RECONNECTION -------------------- */
+    /* -------------------- BROWSER EVENTS -------------------- */
+
+    function handleVisibilityChange() {
+      if (!active || !isVisible()) return;
+
+      refreshRestrictions();
+
+      scheduleRecovery();
+    }
 
     function handleOnline() {
       if (!active) return;
 
-      refreshRestrictions(true);
-      scheduleRefresh();
+      refreshRestrictions();
+
+      scheduleRecovery();
     }
 
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("online", handleOnline);
+    function handleOffline() {
+      connected = false;
+    }
+
+    /* -------------------- SUBSCRIPTIONS -------------------- */
+
+    const unsubscribePresence = subscribeToPresence(
+      userId,
+      handlePresence
+    );
+
+    const unsubscribeMessages = subscribeToAllMessages(
+      userId,
+      handleMessage,
+      handleStatus
+    );
+
+    document.addEventListener(
+      "visibilitychange",
+      handleVisibilityChange
+    );
+
+    window.addEventListener(
+      "online",
+      handleOnline
+    );
+
+    window.addEventListener(
+      "offline",
+      handleOffline
+    );
 
     /* -------------------- CLEANUP -------------------- */
 
     return () => {
       active = false;
 
-      if (refreshTimer !== null) {
-        clearTimeout(refreshTimer);
-      }
+      clearTimeout(refreshTimer);
 
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("online", handleOnline);
+      recentMessages.clear();
+
+      document.removeEventListener(
+        "visibilitychange",
+        handleVisibilityChange
+      );
+
+      window.removeEventListener(
+        "online",
+        handleOnline
+      );
+
+      window.removeEventListener(
+        "offline",
+        handleOffline
+      );
 
       unsubscribePresence();
       unsubscribeMessages();
 
-      const presenceStore = usePresenceStore.getState();
+      const presence = getPresence();
 
-      // Preserve cached restrictions during remounts.
-      // Logout and account switching perform a full reset.
-      if (presenceStore.userId === userId) {
-        presenceStore.clearOnlineUsers();
+      if (presence.userId === userId) {
+        presence.clearOnlineUsers();
       }
     };
-
   }, [userId]);
 
   return null;

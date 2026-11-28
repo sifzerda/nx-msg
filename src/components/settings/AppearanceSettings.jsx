@@ -87,7 +87,7 @@ function OptionCard({
   children,
 }) {
   return (
-    <label className="block cursor-pointer">
+    <label className="relative block min-w-0 cursor-pointer">
       <input
         type="radio"
         name={name}
@@ -103,10 +103,9 @@ function OptionCard({
           peer-focus-visible:outline-2
           peer-focus-visible:outline-offset-2
           peer-focus-visible:outline-accent
-          ${
-            selected
-              ? "border-accent bg-surface-active"
-              : "border-border bg-surface hover:bg-surface-hover"
+          ${selected
+            ? "border-accent bg-surface-active"
+            : "border-border bg-surface hover:bg-surface-hover"
           }
         `}
       >

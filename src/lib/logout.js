@@ -3,6 +3,7 @@
 "use client";
 
 import { createClient } from "@/lib/supabase/client";
+import { cleanupPushForLogout } from "@/lib/pushClient";
 
 import { clearMessageProfileCache } from "@/lib/messageProfiles";
 import { clearAttachmentCache } from "@/lib/extras/attachments";
@@ -14,179 +15,120 @@ import useContactStore from "@/store/useContactStore";
 import usePresenceStore from "@/store/usePresenceStore";
 import useBlockStore from "@/store/useBlockStore";
 
-const supabase = createClient();
-
 let logoutRequest = null;
 
-/* -------------------- PUSH CLEANUP -------------------- */
+/* -------------------- APPLICATION CLEANUP -------------------- */
 
-async function cleanupPushSubscription() {
-    let cleanupError = null;
-
-    if (
-        typeof navigator === "undefined" || !("serviceWorker" in navigator)
-    ) {
-        return null;
-    }
-
-    try {
-        const registration = await navigator.serviceWorker.getRegistration("/");
-        const subscription = await registration?.pushManager?.getSubscription();
-
-        if (!subscription) {
-            return null;
-        }
-
-        /* -------------------- SERVER CLEANUP -------------------- */
-
-        try {
-            const response = await fetch(
-                "/api/push/unsubscribe",
-                {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    cache: "no-store",
-
-                    body: JSON.stringify({
-                        endpoint: subscription.endpoint,
-                        // Preserve the user's saved preference.
-                        rememberPreference: false,
-                    }),
-                }
-            );
-
-            if (!response.ok) {
-                const result = await response
-                    .json()
-                    .catch(() => ({}));
-
-                throw new Error(
-                    result.error || `Push unsubscribe failed (${response.status})`
-                );
-            }
-
-        } catch (error) {
-            cleanupError = error;
-
-            console.error("Server push cleanup failed:", error);
-        }
-
-        /* -------------------- BROWSER CLEANUP -------------------- */
-
-        // Remove the browser subscription regardless
-        // of whether server cleanup succeeded.
-
-        try {
-            const removed = await subscription.unsubscribe();
-
-            if (!removed) {
-                throw new Error("Browser subscription could not be removed");
-            }
-
-        } catch (error) {
-            cleanupError ??= error;
-
-            console.error("Browser push cleanup failed:", error);
-        }
-
-    } catch (error) {
-        cleanupError ??= error;
-
-        console.error("Push cleanup failed:", error);
-    }
-
-    return cleanupError;
-}
-
-/* -------------------- RESET STORES -------------------- */
-
-function resetStores() {
+export function resetApplication() {
     usePushStore.getState().reset();
     useBlockStore.getState().reset();
     useChatStore.getState().reset();
     useContactStore.getState().reset();
     usePresenceStore.getState().reset();
-}
 
-/* -------------------- CLEAR CACHES -------------------- */
-
-function clearCaches() {
     clearMessageProfileCache();
     clearAttachmentCache();
     clearLinkPreviewCache();
 }
 
-/* -------------------- LOGOUT OPERATION -------------------- */
+export function isLoggingOut() {
+    return logoutRequest !== null;
+}
+
+/* -------------------- SESSION SYNCHRONISATION -------------------- */
+
+export const SESSION_CHANGE_KEY =
+    "messenger:session-change";
+
+export function notifySessionChange() {
+    try {
+        window.localStorage.setItem(
+            SESSION_CHANGE_KEY,
+            crypto.randomUUID()
+        );
+    } catch {
+        // Storage may be unavailable or restricted.
+    }
+}
+
+/* -------------------- PUSH CLEANUP -------------------- */
+
+async function prepareNotifications() {
+    let cleanupError = null;
+
+    try {
+        await usePushStore.getState().prepareForLogout();
+    } catch (error) {
+        cleanupError = error;
+    }
+
+    try {
+        const error = await cleanupPushForLogout();
+        cleanupError ??= error;
+    } catch (error) {
+        cleanupError ??= error;
+    }
+
+    if (cleanupError) {
+        console.error(
+            "Push logout cleanup failed:",
+            cleanupError.message
+        );
+    }
+
+    return cleanupError;
+}
+
+/* -------------------- RECOVERY -------------------- */
+
+function restoreNotifications() {
+    const store = usePushStore.getState();
+
+    store.cancelLogout();
+
+    void store.refresh().catch((error) => {
+        console.error(
+            "Failed to restore notifications:",
+            error?.message
+        );
+    });
+}
+
+/* -------------------- LOGOUT -------------------- */
 
 async function performLogout() {
-    let pushCleanupError = null;
+    const supabase = createClient();
+
     let signedOut = false;
 
     try {
-        /* -------------------- LOCK PUSH OPERATIONS -------------------- */
+        const pushCleanupError =
+            await prepareNotifications();
 
-        try {
-            await usePushStore
-                .getState()
-                .prepareForLogout();
+        const { error } =
+            await supabase.auth.signOut();
 
-        } catch (error) {
-            pushCleanupError = error;
-
-            console.error("Failed to prepare notifications for logout:", error);
-        }
-
-        /* -------------------- PUSH CLEANUP -------------------- */
-
-        const cleanupError = await cleanupPushSubscription();
-
-        pushCleanupError ??= cleanupError;
-
-        /* -------------------- SIGN OUT -------------------- */
-
-        const { error: signOutError } = await supabase.auth.signOut();
-
-        if (signOutError) {
-            throw signOutError;
-        }
+        if (error) throw error;
 
         signedOut = true;
 
-        /* -------------------- RESET APPLICATION -------------------- */
-
-        resetStores();
-        clearCaches();
+        resetApplication();
+        notifySessionChange();
 
         return {
             success: true,
             pushCleanupError,
         };
-
     } catch (error) {
         if (!signedOut) {
-            const pushStore = usePushStore.getState();
-
-            pushStore.cancelLogout();
-
-            // Push cleanup may already have removed
-            // the subscription. Restore the saved
-            // preference if the user remains signed in.
-
-            void pushStore.refresh().catch(
-                (restoreError) => {
-                    console.error(
-                        "Failed to restore notifications:",
-                        restoreError
-                    );
-                }
-            );
+            restoreNotifications();
         }
 
         throw error;
     }
 }
 
-/* -------------------- PUBLIC LOGOUT -------------------- */
+/* -------------------- PUBLIC API -------------------- */
 
 export function logout() {
     if (logoutRequest) {

@@ -1,22 +1,32 @@
 // src/app/messages/[id]/page.js
 
-import { notFound, redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { notFound } from "next/navigation";
+
+import {
+  createClient,
+  requireUser,
+} from "@/lib/supabase/server";
+
 import ChatWindow from "@/components/ChatWindow";
 
-export default async function ConversationPage({ params }) {
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export default async function ConversationPage({
+  params,
+}) {
   const { id } = await params;
 
-  const supabase = await createClient();
+  const user = await requireUser();
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user) {
-    redirect("/login");
+  if (
+    typeof id !== "string" ||
+    !UUID_PATTERN.test(id)
+  ) {
+    notFound();
   }
+
+  const supabase = await createClient();
 
   const { data: conversation, error } = await supabase
     .from("conversations")

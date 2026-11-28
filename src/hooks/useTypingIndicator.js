@@ -11,240 +11,230 @@ import {
 
 import { createTypingChannel } from "@/lib/extras/typing";
 
-/* -------------------- CONSTANTS -------------------- */
-
-const BROADCAST_INTERVAL = 1000;
+const BROADCAST_INTERVAL = 3000;
 const INACTIVITY_TIMEOUT = 2000;
-const REMOTE_TIMEOUT = 5000;
+const REMOTE_TIMEOUT = 7000;
 
 const EMPTY_USERS = Object.freeze([]);
-
-/* -------------------- HOOK -------------------- */
 
 export default function useTypingIndicator(
   conversationId,
   userId,
   { enabled = true } = {}
 ) {
-  const channelRef = useRef(null);
-  const inactivityRef = useRef(null);
-  const lastBroadcastRef = useRef(0);
-  const localTypingRef = useRef(false);
+  const sessionRef = useRef(null);
+  const [typingState, setTypingState] = useState(null);
+  const canUseTyping = Boolean(enabled && conversationId && userId);
 
-  const [typingState, setTypingState] = useState({
-    conversationId: null,
-    userId: null,
-    users: EMPTY_USERS,
-  });
-
-  const canUseTyping = Boolean(
-    enabled &&
-    conversationId &&
-    userId
-  );
-
-  /* -------------------- STOP TYPING -------------------- */
-
-  const stopTyping = useCallback(() => {
-    clearTimeout(inactivityRef.current);
-
-    inactivityRef.current = null;
-
-    const wasTyping = localTypingRef.current;
-
-    localTypingRef.current = false;
-    lastBroadcastRef.current = 0;
-
-    if (wasTyping) {
-      channelRef.current?.broadcast(false);
-    }
-  }, []);
-
-  /* -------------------- NOTIFY TYPING -------------------- */
+  /* -------------------- PUBLIC ACTIONS -------------------- */
 
   const notifyTyping = useCallback(
     (value) => {
-      if (!canUseTyping) return;
+      const session = sessionRef.current;
 
       if (
-        typeof value !== "string" ||
-        !value.trim()
+        !canUseTyping ||
+        session?.conversationId !== conversationId ||
+        session?.userId !== userId
       ) {
-        stopTyping();
         return;
       }
 
-      const now = Date.now();
-
-      const shouldBroadcast =
-        !localTypingRef.current ||
-        now - lastBroadcastRef.current >=
-          BROADCAST_INTERVAL;
-
-      localTypingRef.current = true;
-
-      if (
-        shouldBroadcast &&
-        channelRef.current
-      ) {
-        channelRef.current.broadcast(true);
-
-        lastBroadcastRef.current = now;
-      }
-
-      clearTimeout(inactivityRef.current);
-
-      inactivityRef.current = setTimeout(
-        stopTyping,
-        INACTIVITY_TIMEOUT
-      );
+      session.notify(value);
     },
-    [canUseTyping, stopTyping]
+    [canUseTyping, conversationId, userId]
   );
 
-  /* -------------------- CHANNEL LIFECYCLE -------------------- */
+  const stopTyping = useCallback(() => {
+    const session = sessionRef.current;
+
+    if (
+      session?.conversationId === conversationId &&
+      session?.userId === userId
+    ) {
+      session.stop();
+    }
+  }, [conversationId, userId]);
+
+  /* -------------------- SESSION -------------------- */
 
   useEffect(() => {
-    if (!canUseTyping) {
-      stopTyping();
-
-      setTypingState((current) => {
-        if (
-          current.conversationId === null &&
-          current.userId === null &&
-          current.users.length === 0
-        ) {
-          return current;
-        }
-
-        return {
-          conversationId: null,
-          userId: null,
-          users: EMPTY_USERS,
-        };
-      });
-
-      return;
-    }
+    if (!canUseTyping) return;
 
     let active = true;
     let connection = null;
 
+    let localTyping = false;
+    let lastBroadcastAt = null;
+    let inactivityTimer = null;
+
     const remoteTimers = new Map();
 
-    setTypingState({
+    const session = {
       conversationId,
       userId,
-      users: EMPTY_USERS,
-    });
+      notify,
+      stop,
+    };
 
-    /* -------------------- REMOVE REMOTE USER -------------------- */
+    sessionRef.current = session;
+
+    /* -------------------- LOCAL TYPING -------------------- */
+
+    function broadcastTyping() {
+      if (!active || !localTyping) return;
+
+      const now = Date.now();
+
+      if (
+        lastBroadcastAt !== null &&
+        now - lastBroadcastAt < BROADCAST_INTERVAL
+      ) {
+        return;
+      }
+
+      if (connection?.broadcast(true)) {
+        lastBroadcastAt = now;
+      }
+    }
+
+    function stop() {
+      clearTimeout(inactivityTimer);
+      inactivityTimer = null;
+
+      if (!localTyping) return;
+
+      localTyping = false;
+      lastBroadcastAt = null;
+
+      connection?.broadcast(false);
+    }
+
+    function notify(value) {
+      if (!active) return;
+
+      if (
+        typeof value !== "string" ||
+        !value.trim() ||
+        document.visibilityState === "hidden"
+      ) {
+        stop();
+        return;
+      }
+
+      localTyping = true;
+
+      broadcastTyping();
+
+      clearTimeout(inactivityTimer);
+
+      inactivityTimer = setTimeout(
+        stop,
+        INACTIVITY_TIMEOUT
+      );
+    }
+
+    /* -------------------- REMOTE TYPING -------------------- */
+
+    function publishUsers() {
+      if (!active) return;
+
+      setTypingState({
+        session,
+        conversationId,
+        userId,
+        users: remoteTimers.size
+          ? [...remoteTimers.keys()]
+          : EMPTY_USERS,
+      });
+    }
 
     function removeUser(id) {
+      if (!remoteTimers.has(id)) return;
+
       clearTimeout(remoteTimers.get(id));
 
       remoteTimers.delete(id);
 
-      if (!active) return;
-
-      setTypingState((current) => {
-        if (
-          current.conversationId !== conversationId ||
-          current.userId !== userId ||
-          !current.users.includes(id)
-        ) {
-          return current;
-        }
-
-        return {
-          conversationId,
-          userId,
-
-          users: current.users.filter(
-            (user) => user !== id
-          ),
-        };
-      });
+      publishUsers();
     }
 
-    /* -------------------- RECEIVE TYPING -------------------- */
+    function clearRemoteUsers(publish = true) {
+      if (!remoteTimers.size) return;
+
+      for (const timer of remoteTimers.values()) {
+        clearTimeout(timer);
+      }
+
+      remoteTimers.clear();
+
+      if (publish) {
+        publishUsers();
+      }
+    }
 
     function handleTyping(payload) {
-      if (!active || !payload) return;
+      if (
+        !active ||
+        !payload ||
+        typeof payload.userId !== "string" ||
+        payload.userId === userId ||
+        typeof payload.typing !== "boolean"
+      ) {
+        return;
+      }
 
       const {
         userId: senderId,
         typing,
       } = payload;
 
-      if (
-        senderId === userId ||
-        typeof senderId !== "string" ||
-        typeof typing !== "boolean"
-      ) {
-        return;
-      }
-
       if (!typing) {
         removeUser(senderId);
         return;
       }
 
+      const alreadyTyping =
+        remoteTimers.has(senderId);
+
       clearTimeout(remoteTimers.get(senderId));
 
       remoteTimers.set(
         senderId,
-
         setTimeout(() => {
           removeUser(senderId);
         }, REMOTE_TIMEOUT)
       );
 
-      setTypingState((current) => {
-        const users =
-          current.conversationId === conversationId &&
-          current.userId === userId
-            ? current.users
-            : EMPTY_USERS;
-
-        if (users.includes(senderId)) {
-          return current;
-        }
-
-        return {
-          conversationId,
-          userId,
-          users: [...users, senderId],
-        };
-      });
+      // Heartbeats only extend the expiry timer.
+      // They do not need to update React state.
+      if (!alreadyTyping) {
+        publishUsers();
+      }
     }
 
-    /* -------------------- CONNECT -------------------- */
+    /* -------------------- CONNECTION -------------------- */
+
+    function handleStatus(connected) {
+      if (!active) return;
+
+      lastBroadcastAt = null;
+
+      if (connected) {
+        broadcastTyping();
+      } else {
+        clearRemoteUsers();
+      }
+    }
 
     async function connect() {
       try {
         const result = await createTypingChannel({
           conversationId,
           userId,
-
           onTyping: handleTyping,
-
-          onStatus: (connected) => {
-            if (!active || !connected) return;
-
-            if (
-              localTypingRef.current &&
-              channelRef.current
-            ) {
-              channelRef.current.broadcast(true);
-
-              lastBroadcastRef.current = Date.now();
-            }
-          },
+          onStatus: handleStatus,
         });
-
-        // The conversation may have changed or
-        // become blocked while connecting.
 
         if (!active) {
           result.close();
@@ -253,14 +243,11 @@ export default function useTypingIndicator(
 
         connection = result;
 
-        channelRef.current = result;
-
-        if (localTypingRef.current) {
-          result.broadcast(true);
-
-          lastBroadcastRef.current = Date.now();
+        // Handles a subscription becoming ready
+        // before the asynchronous setup completes.
+        if (connection.isConnected()) {
+          broadcastTyping();
         }
-
       } catch (error) {
         if (active) {
           console.error(
@@ -271,61 +258,49 @@ export default function useTypingIndicator(
       }
     }
 
-    /* -------------------- PAGE VISIBILITY -------------------- */
+    /* -------------------- VISIBILITY -------------------- */
 
     function handleVisibility() {
-      if (
-        document.visibilityState === "hidden"
-      ) {
-        stopTyping();
+      if (document.visibilityState === "hidden") {
+        stop();
       }
     }
-
-    void connect();
 
     document.addEventListener(
       "visibilitychange",
       handleVisibility
     );
 
+    void connect();
+
     /* -------------------- CLEANUP -------------------- */
 
     return () => {
       active = false;
 
-      stopTyping();
+      stop();
 
-      if (channelRef.current === connection) {
-        channelRef.current = null;
-      }
+      clearRemoteUsers(false);
 
       connection?.close();
 
-      for (const timer of remoteTimers.values()) {
-        clearTimeout(timer);
+      if (sessionRef.current === session) {
+        sessionRef.current = null;
       }
-
-      remoteTimers.clear();
 
       document.removeEventListener(
         "visibilitychange",
         handleVisibility
       );
     };
+  }, [conversationId, userId, canUseTyping]);
 
-  }, [
-    conversationId,
-    userId,
-    canUseTyping,
-    stopTyping,
-  ]);
-
-  /* -------------------- VISIBLE TYPING USERS -------------------- */
+  /* -------------------- VISIBLE USERS -------------------- */
 
   const typingUsers =
     canUseTyping &&
-    typingState.conversationId === conversationId &&
-    typingState.userId === userId
+    typingState?.conversationId === conversationId &&
+    typingState?.userId === userId
       ? typingState.users
       : EMPTY_USERS;
 

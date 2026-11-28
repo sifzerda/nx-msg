@@ -165,13 +165,32 @@ export function validateTarget(value) {
 
 function withAbort(promise, signal) {
     return new Promise((resolve, reject) => {
-        if (signal.aborted) {
-            reject(signal.reason);
-            return;
+        function cleanup() {
+            signal.removeEventListener(
+                "abort",
+                handleAbort
+            );
         }
 
         function handleAbort() {
+            cleanup();
             reject(signal.reason);
+        }
+
+        Promise.resolve(promise).then(
+            (value) => {
+                cleanup();
+                resolve(value);
+            },
+            (error) => {
+                cleanup();
+                reject(error);
+            }
+        );
+
+        if (signal.aborted) {
+            handleAbort();
+            return;
         }
 
         signal.addEventListener(
@@ -179,15 +198,6 @@ function withAbort(promise, signal) {
             handleAbort,
             { once: true }
         );
-
-        Promise.resolve(promise)
-            .then(resolve, reject)
-            .finally(() => {
-                signal.removeEventListener(
-                    "abort",
-                    handleAbort
-                );
-            });
     });
 }
 
@@ -418,7 +428,7 @@ async function readLimitedBuffer(response, maxBytes) {
                 throw new Error("Response exceeds size limit");
             }
 
-            chunks.push(Buffer.from(value));
+            chunks.push(value);
         }
 
         if (!totalBytes) {
@@ -437,15 +447,6 @@ async function readLimitedBuffer(response, maxBytes) {
     }
 }
 
-/* -------------------- LIMITED IMAGE READER -------------------- */
-
-function readLimitedImage(response) {
-    return readLimitedBuffer(
-        response,
-        MAX_IMAGE_BYTES
-    );
-}
-
 /* -------------------- LIMITED JSON READER -------------------- */
 
 async function readLimitedJson(response) {
@@ -461,141 +462,182 @@ async function readLimitedJson(response) {
 /* -------------------- SHARED SAFE FETCH -------------------- */
 
 async function safeFetchResource(
-    value,
-    {
-        accept,
-        allowedContentTypes,
-        readBody,
-        httpsOnly = false,
-        allowedHostnames = null,
-        maxRedirects = MAX_REDIRECTS,
-        timeoutMs = FETCH_TIMEOUT,
-    }
+  value,
+  {
+    accept,
+    allowedContentTypes,
+    readBody,
+    httpsOnly = false,
+    allowedHostnames = null,
+    maxRedirects = MAX_REDIRECTS,
+    timeoutMs = FETCH_TIMEOUT,
+  }
 ) {
-    if (
-        !Number.isFinite(timeoutMs) ||
-        timeoutMs <= 0
+  if (
+    !Number.isFinite(timeoutMs) ||
+    timeoutMs <= 0
+  ) {
+    throw new Error("Invalid request timeout");
+  }
+
+  if (
+    !Number.isInteger(maxRedirects) ||
+    maxRedirects < 0 ||
+    maxRedirects > MAX_REDIRECTS
+  ) {
+    throw new Error("Invalid redirect limit");
+  }
+
+  const controller = new AbortController();
+  const { signal } = controller;
+
+  const timeout = setTimeout(() => {
+    controller.abort(
+      new Error("Website request timed out")
+    );
+  }, Math.min(timeoutMs, FETCH_TIMEOUT));
+
+  let currentUrl = value;
+
+  try {
+    for (
+      let redirectCount = 0;
+      redirectCount <= maxRedirects;
+      redirectCount++
     ) {
-        throw new Error("Invalid request timeout");
-    }
+      signal.throwIfAborted();
 
-    const controller = new AbortController();
+      /* Validate the original URL before normalisation. */
 
-    const timeout = setTimeout(() => {
-        controller.abort(new Error("Website request timed out"));
-    }, Math.min(timeoutMs, FETCH_TIMEOUT));
+      if (!isPreviewAllowed(currentUrl)) {
+        throw new Error(
+          "Sensitive preview URL blocked"
+        );
+      }
 
-    let currentUrl = value;
+      const { url, hostname } =
+        validateTarget(currentUrl);
 
-    try {
-        for (
-            let redirectCount = 0;
-            redirectCount <= maxRedirects;
-            redirectCount++
+      if (
+        allowedHostnames &&
+        !allowedHostnames.has(hostname)
+      ) {
+        throw new Error(
+          "Unexpected provider hostname"
+        );
+      }
+
+      if (
+        httpsOnly &&
+        url.protocol !== "https:"
+      ) {
+        throw new Error("HTTPS required");
+      }
+
+      /* Resolve and validate the destination address. */
+
+      const address = await resolvePublicAddress(
+        hostname,
+        signal
+      );
+
+      signal.throwIfAborted();
+
+      const agent = createPinnedAgent(
+        hostname,
+        address
+      );
+
+      let response;
+
+      try {
+        response = await undiciFetch(url.href, {
+          method: "GET",
+
+          headers: {
+            ...REQUEST_HEADERS,
+            Accept: accept,
+          },
+
+          redirect: "manual",
+          dispatcher: agent,
+          signal,
+        });
+
+        /* Handle redirects manually. */
+
+        if (
+          REDIRECT_STATUSES.has(response.status)
         ) {
-            const { url, hostname } = validateTarget(currentUrl);
+          if (redirectCount >= maxRedirects) {
+            throw new Error("Too many redirects");
+          }
 
-            if (!isPreviewAllowed(url.href)) {
-                throw new Error("Sensitive preview URL blocked");
-            }
+          const location =
+            response.headers.get("location");
 
-            if (
-                allowedHostnames && !allowedHostnames.has(hostname)
-            ) {
-                throw new Error("Unexpected provider hostname");
-            }
+          if (!location) {
+            throw new Error("Invalid redirect");
+          }
 
-            if (
-                httpsOnly && url.protocol !== "https:"
-            ) {
-                throw new Error("HTTPS required");
-            }
+          const destination = new URL(
+            location,
+            url
+          );
 
-            const address = await resolvePublicAddress(hostname, controller.signal);
-            const agent = createPinnedAgent(hostname, address);
+          if (
+            (
+              httpsOnly ||
+              url.protocol === "https:"
+            ) &&
+            destination.protocol !== "https:"
+          ) {
+            throw new Error(
+              "Insecure redirect blocked"
+            );
+          }
 
-            let response;
+          currentUrl = destination.href;
 
-            try {
-                response = await undiciFetch(url.href, {
-                    method: "GET",
-
-                    headers: {
-                        ...REQUEST_HEADERS,
-                        Accept: accept,
-                    },
-
-                    redirect: "manual",
-                    dispatcher: agent,
-                    signal: controller.signal,
-                });
-
-                if (
-                    REDIRECT_STATUSES.has(response.status)
-                ) {
-                    if (redirectCount >= maxRedirects) {
-                        throw new Error("Too many redirects");
-                    }
-
-                    const location =
-                        response.headers.get("location");
-
-                    if (!location) {
-                        throw new Error("Invalid redirect");
-                    }
-
-                    const destination = new URL(
-                        location,
-                        url
-                    );
-
-                    if (
-                        (httpsOnly ||
-                            url.protocol === "https:") &&
-                        destination.protocol !== "https:"
-                    ) {
-                        throw new Error(
-                            "Insecure redirect blocked"
-                        );
-                    }
-
-                    currentUrl = destination.href;
-
-                    continue;
-                }
-
-                const contentType = validateResponse(
-                    response,
-                    allowedContentTypes
-                );
-
-                const body = await readBody(response);
-
-                return {
-                    body,
-                    contentType,
-                    finalUrl: url.href,
-                };
-            } finally {
-                if (
-                    response?.body &&
-                    !response.body.locked
-                ) {
-                    try {
-                        await response.body.cancel();
-                    } catch {
-                        // Body may already be consumed.
-                    }
-                }
-
-                await agent.destroy();
-            }
+          continue;
         }
 
-        throw new Error("Too many redirects");
-    } finally {
-        clearTimeout(timeout);
+        /* Validate and read the response. */
+
+        const contentType = validateResponse(
+          response,
+          allowedContentTypes
+        );
+
+        const body = await readBody(response);
+
+        signal.throwIfAborted();
+
+        return {
+          body,
+          contentType,
+          finalUrl: url.href,
+        };
+      } finally {
+        if (
+          response?.body &&
+          !response.body.locked
+        ) {
+          try {
+            await response.body.cancel();
+          } catch {
+            // Body may already be consumed.
+          }
+        }
+
+        await agent.destroy();
+      }
     }
+
+    throw new Error("Too many redirects");
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 /* -------------------- HTML FETCH -------------------- */
@@ -617,15 +659,17 @@ export async function safeFetchHtml(value, { timeoutMs = FETCH_TIMEOUT } = {}) {
 
 export async function safeFetchImage(value) {
     const result = await safeFetchResource(value, {
-        accept: [
-            "image/webp",
-            "image/png",
-            "image/jpeg",
-            "image/gif",
-        ].join(","),
+        accept: "image/webp,image/png,image/jpeg,image/gif",
 
-        allowedContentTypes: ALLOWED_IMAGE_CONTENT_TYPES,
-        readBody: readLimitedImage,
+        allowedContentTypes:
+            ALLOWED_IMAGE_CONTENT_TYPES,
+
+        readBody: (response) =>
+            readLimitedBuffer(
+                response,
+                MAX_IMAGE_BYTES
+            ),
+
         httpsOnly: true,
     });
 
@@ -639,28 +683,29 @@ export async function safeFetchImage(value) {
 /* -------------------- JSON FETCH -------------------- */
 
 export async function safeFetchJson(
-    value,
-    {
-        allowedHostnames = null,
-        maxRedirects = 0,
-        timeoutMs = FETCH_TIMEOUT,
-    } = {}
+  value,
+  {
+    allowedHostnames = null,
+    maxRedirects = 0,
+    timeoutMs = FETCH_TIMEOUT,
+  } = {}
 ) {
-    const result = await safeFetchResource(value, {
-        accept: "application/json",
+  const result = await safeFetchResource(value, {
+    accept: "application/json",
 
-        allowedContentTypes: ALLOWED_JSON_CONTENT_TYPES,
+    allowedContentTypes:
+      ALLOWED_JSON_CONTENT_TYPES,
 
-        readBody: readLimitedJson,
+    readBody: readLimitedJson,
 
-        httpsOnly: true,
-        allowedHostnames,
-        maxRedirects,
-        timeoutMs,
-    });
+    httpsOnly: true,
+    allowedHostnames,
+    maxRedirects,
+    timeoutMs,
+  });
 
-    return {
-        data: result.body,
-        finalUrl: result.finalUrl,
-    };
+  return {
+    data: result.body,
+    finalUrl: result.finalUrl,
+  };
 }

@@ -1,32 +1,60 @@
 // public/sw.js
 
 const DEFAULT_PATH = "/messages";
-const CHAT_PATH_PATTERN = /^\/messages\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+
+const UUID_PATTERN = new RegExp(`^${UUID_SOURCE}$`, "i");
+const CHAT_PATH_PATTERN = new RegExp(`^/messages/(${UUID_SOURCE})$`, "i");
+
+const MAX_TITLE_LENGTH = 120;
+const MAX_BODY_LENGTH = 250;
+
+/* -------------------- VALIDATION -------------------- */
 
 function getSafePath(value) {
-  if (
+  return (
     typeof value === "string" &&
     CHAT_PATH_PATTERN.test(value)
-  ) {
-    return value;
-  }
-
-  return DEFAULT_PATH;
+  )
+    ? value
+    : DEFAULT_PATH;
 }
 
-function getText(value, fallback) {
-  return typeof value === "string" && value.trim()
-    ? value.trim()
-    : fallback;
+function getMessageId(value) {
+  return (
+    typeof value === "string" &&
+    UUID_PATTERN.test(value)
+  )
+    ? value.toLowerCase()
+    : null;
+}
+
+function getText(value, fallback, maxLength) {
+  const text =
+    typeof value === "string"
+      ? value.trim()
+      : "";
+
+  return (text || fallback).slice(0, maxLength);
+}
+
+function getNotificationTag(path) {
+  const match = CHAT_PATH_PATTERN.exec(path);
+
+  return match
+    ? `chat:${match[1].toLowerCase()}`
+    : "messenger";
 }
 
 function parsePushData(event) {
-  if (!event.data) return {};
-
   try {
-    const data = event.data.json();
+    const data = event.data?.json();
 
-    return data && typeof data === "object"
+    return (
+      data &&
+      typeof data === "object" &&
+      !Array.isArray(data)
+    )
       ? data
       : {};
   } catch {
@@ -34,38 +62,123 @@ function parsePushData(event) {
   }
 }
 
-self.addEventListener("push", (event) => {
+/* -------------------- PUSH -------------------- */
+
+async function handlePush(event) {
   const data = parsePushData(event);
 
   const path = getSafePath(data.url);
+  const messageId = getMessageId(data.messageId);
+  const tag = getNotificationTag(path);
 
   const title = getText(
     data.title,
-    "New message"
+    "New message",
+    MAX_TITLE_LENGTH
   );
 
   const body = getText(
     data.body,
-    "You have a new message"
+    "You have a new message",
+    MAX_BODY_LENGTH
   );
 
-  const tag = getText(
-    data.tag,
-    "messenger"
-  );
+  let duplicate = false;
 
-  event.waitUntil(
-    self.registration.showNotification(title, {
-      body,
-      icon: "/favicon.ico",
-      tag,
-      renotify: true,
-      data: {
-        url: path,
-      },
-    })
-  );
+  if (messageId) {
+    try {
+      const existing =
+        await self.registration.getNotifications({
+          tag,
+        });
+
+      duplicate = existing.some(
+        (notification) =>
+          notification.data?.messageId === messageId
+      );
+    } catch {
+      // Continue displaying notifications if
+      // the browser cannot inspect existing ones.
+    }
+  }
+
+  await self.registration.showNotification(title, {
+    body,
+
+    icon: "/favicon.ico",
+
+    tag,
+
+    renotify: !duplicate,
+
+    silent: duplicate,
+
+    data: {
+      url: path,
+      messageId,
+    },
+  });
+}
+
+self.addEventListener("push", (event) => {
+  event.waitUntil(handlePush(event));
 });
+
+/* -------------------- WINDOW NAVIGATION -------------------- */
+
+async function focusMessenger(path) {
+  const origin = self.location.origin;
+
+  const targetUrl = new URL(path, origin);
+
+  const windows = await self.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true,
+  });
+
+  let reusableWindow = null;
+
+  for (const client of windows) {
+    const url = new URL(client.url);
+
+    if (url.origin !== origin) {
+      continue;
+    }
+
+    if (url.pathname === path) {
+      try {
+        return await client.focus();
+      } catch {
+        continue;
+      }
+    }
+
+    const isMessenger =
+      url.pathname === DEFAULT_PATH ||
+      url.pathname.startsWith("/messages/");
+
+    if (isMessenger && !reusableWindow) {
+      reusableWindow = client;
+    }
+  }
+
+  if (reusableWindow) {
+    try {
+      const navigated =
+        await reusableWindow.navigate(targetUrl.href);
+
+      if (navigated) {
+        return await navigated.focus();
+      }
+    } catch {
+      // Open a new window if reuse fails.
+    }
+  }
+
+  return self.clients.openWindow(targetUrl.href);
+}
+
+/* -------------------- NOTIFICATION CLICK -------------------- */
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
@@ -74,59 +187,5 @@ self.addEventListener("notificationclick", (event) => {
     event.notification.data?.url
   );
 
-  const targetUrl = new URL(
-    path,
-    self.location.origin
-  );
-
-  event.waitUntil(
-    (async () => {
-      const windows = await self.clients.matchAll({
-        type: "window",
-        includeUncontrolled: true,
-      });
-
-      const sameOriginWindows = windows.filter(
-        (client) =>
-          new URL(client.url).origin ===
-          self.location.origin
-      );
-
-      // Focus the correct conversation if already open.
-      const matchingWindow = sameOriginWindows.find(
-        (client) =>
-          new URL(client.url).pathname === path
-      );
-
-      if (matchingWindow) {
-        return matchingWindow.focus();
-      }
-
-      // Reuse an existing Messenger window.
-      const existingWindow = sameOriginWindows[0];
-
-      if (existingWindow) {
-        try {
-          const navigatedWindow =
-            await existingWindow.navigate(
-              targetUrl.href
-            );
-
-          if (navigatedWindow) {
-            return navigatedWindow.focus();
-          }
-        } catch (error) {
-          console.warn(
-            "Unable to navigate existing window:",
-            error
-          );
-        }
-      }
-
-      // Open Messenger if no usable window exists.
-      return self.clients.openWindow(
-        targetUrl.href
-      );
-    })()
-  );
+  event.waitUntil(focusMessenger(path));
 });

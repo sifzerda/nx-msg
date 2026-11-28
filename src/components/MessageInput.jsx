@@ -22,40 +22,24 @@ import {
 
 import useChatStore from "@/store/useChatStore";
 
-import { compressImage } from "@/utils/compressImage";
 import { insertEmoji } from "@/utils/emojiUtils";
-
-import {
-  isImageFile,
-  validateFile,
-  normalizeFile,
-  getFileExtension,
-} from "@/utils/fileUtils";
-
-import {
-  FILE_ACCEPT,
-  FILE_TYPES,
-} from "@/constants/attachments";
+import { isImageFile, normalizeFile } from "@/utils/fileUtils";
+import { FILE_ACCEPT } from "@/constants/attachments";
 
 import {
   MAX_MESSAGE_LENGTH,
   COMPOSER_PICKER,
 } from "@/constants/emojis";
 
-import ReplyPreview from "./ReplyPreview";
+import { ReplyPreview } from "./MessageReply";
 import AttachmentPreview from "./extras/AttachmentPreview";
-import GifPreview from "./extras/GifPreview";
 
 /* -------------------- LAZY LOADING -------------------- */
 
 function PickerLoading({ label }) {
   return (
     <div className="flex items-center justify-center gap-2 border-t border-gray-800 bg-gray-900 py-8 text-sm text-gray-400">
-      <LoaderCircle
-        size={20}
-        className="animate-spin"
-      />
-
+      <LoaderCircle size={20} className="animate-spin" />
       Loading {label} picker...
     </div>
   );
@@ -77,29 +61,55 @@ const EmojiPicker = dynamic(
   }
 );
 
-/* -------------------- STYLES -------------------- */
+async function prepareFile(file) {
+  if (!isImageFile(file)) {
+    return normalizeFile(file);
+  }
 
-const PICKER_BUTTON_CLASS = [
-  "flex shrink-0 items-center justify-center",
-  "rounded-xl p-2 transition-colors",
-  "disabled:opacity-50 sm:p-2.5",
-].join(" ");
+  const { compressImage } = await import(
+    "@/utils/compressImage"
+  );
 
-const ACTIVE_BUTTON_CLASS =
-  "bg-blue-600/20 text-blue-400";
-
-const INACTIVE_BUTTON_CLASS =
-  "text-gray-400 hover:bg-gray-800 hover:text-blue-400";
-
-function getPickerButtonClass(active) {
-  return `${PICKER_BUTTON_CLASS} ${
-    active
-      ? ACTIVE_BUTTON_CLASS
-      : INACTIVE_BUTTON_CLASS
-  }`;
+  return compressImage(file);
 }
 
-/* -------------------- COMPONENT -------------------- */
+/* -------------------- HELPERS -------------------- */
+
+function getCursor(input) {
+  return {
+    start: input.selectionStart ?? input.value.length,
+    end: input.selectionEnd ?? input.value.length,
+  };
+}
+
+function PickerButton({
+  label,
+  active = false,
+  expanded,
+  disabled,
+  onClick,
+  children,
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      aria-expanded={expanded}
+      className={`flex shrink-0 items-center justify-center rounded-xl p-2 transition-colors disabled:opacity-50 sm:p-2.5 ${
+        active
+          ? "bg-blue-600/20 text-blue-400"
+          : "text-gray-400 hover:bg-gray-800 hover:text-blue-400"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/* -------------------- MESSAGE INPUT -------------------- */
 
 function MessageInput({
   onTyping,
@@ -109,60 +119,54 @@ function MessageInput({
 }) {
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
+
   const selectionIdRef = useRef(0);
-
   const textRef = useRef("");
+  const textVersionRef = useRef(0);
 
-  const cursorRef = useRef({
-    start: 0,
-    end: 0,
-  });
-
+  const cursorRef = useRef({ start: 0, end: 0 });
   const pendingCursorRef = useRef(null);
 
-  /* -------------------- STATE -------------------- */
-
   const [text, setText] = useState("");
-  const [attachment, setAttachment] = useState(null);
-  const [selectedGif, setSelectedGif] = useState(null);
-
+  const [media, setMedia] = useState(null);
   const [activePicker, setActivePicker] = useState(null);
   const [processing, setProcessing] = useState(false);
   const [attachmentError, setAttachmentError] = useState(null);
 
-  /* -------------------- ZUSTAND -------------------- */
-
-  const send = useChatStore((s) => s.send);
   const sending = useChatStore((s) => s.sending);
   const replyTo = useChatStore((s) => s.replyTo);
-  const clearReply = useChatStore((s) => s.clearReply);
 
-  /* -------------------- DERIVED STATE -------------------- */
+  const attachment = media?.type === "file"
+    ? media.value
+    : null;
+
+  const selectedGif = media?.type === "gif"
+    ? media.value
+    : null;
 
   const gifPickerOpen = activePicker === COMPOSER_PICKER.GIF;
   const emojiPickerOpen = activePicker === COMPOSER_PICKER.EMOJI;
+
   const pickerDisabled = sending || processing;
 
   const canSend =
-    !sending &&
-    !processing &&
-    Boolean(
-      text.trim() ||
-      attachment ||
-      selectedGif
-    );
+    !pickerDisabled &&
+    Boolean(text.trim() || media);
 
-  /* -------------------- CURSOR MANAGEMENT -------------------- */
+  const placeholder = media
+    ? "Add a caption..."
+    : replyTo
+      ? "Type a reply..."
+      : "Type a message...";
+
+  /* -------------------- CURSOR -------------------- */
 
   const rememberCursor = useCallback(() => {
     const input = inputRef.current;
 
-    if (!input) return;
-
-    cursorRef.current = {
-      start: input.selectionStart ?? input.value.length,
-      end: input.selectionEnd ?? input.value.length,
-    };
+    if (input) {
+      cursorRef.current = getCursor(input);
+    }
   }, []);
 
   const focusInput = useCallback(() => {
@@ -170,9 +174,9 @@ function MessageInput({
 
     if (!input) return;
 
-    input.focus();
-
     const { start, end } = cursorRef.current;
+
+    input.focus();
 
     input.setSelectionRange(
       Math.min(start, input.value.length),
@@ -186,24 +190,12 @@ function MessageInput({
     if (cursor === null) return;
 
     pendingCursorRef.current = null;
-
-    inputRef.current?.setSelectionRange(
-      cursor,
-      cursor
-    );
+    inputRef.current?.setSelectionRange(cursor, cursor);
   }, [text]);
 
-  /* -------------------- EFFECTS -------------------- */
-
-  // Focus the composer when replying.
-
   useEffect(() => {
-    if (replyTo) {
-      focusInput();
-    }
+    if (replyTo) focusInput();
   }, [replyTo, focusInput]);
-
-  // Invalidate pending file processing on unmount.
 
   useEffect(() => {
     return () => {
@@ -211,34 +203,35 @@ function MessageInput({
     };
   }, []);
 
-  /* -------------------- TEXT INPUT -------------------- */
+  /* -------------------- TEXT -------------------- */
+
+  const updateText = useCallback(
+    (value) => {
+      textRef.current = value;
+      textVersionRef.current += 1;
+
+      setText(value);
+      onTyping?.(value);
+    },
+    [onTyping]
+  );
 
   function handleChange(event) {
-    const value = event.target.value;
+    cursorRef.current = getCursor(event.target);
+    pendingCursorRef.current = null;
 
-    textRef.current = value;
-
-    cursorRef.current = {
-      start: event.target.selectionStart ?? value.length,
-      end: event.target.selectionEnd ?? value.length,
-    };
-
-    setText(value);
-
-    onTyping?.(value);
+    updateText(event.target.value);
   }
 
   function handleBlur() {
     rememberCursor();
-
     onStopTyping?.();
   }
 
-  /* -------------------- PICKER MANAGEMENT -------------------- */
+  /* -------------------- PICKERS -------------------- */
 
   const closePicker = useCallback(() => {
     setActivePicker(null);
-
     focusInput();
   }, [focusInput]);
 
@@ -257,13 +250,9 @@ function MessageInput({
     setActivePicker(picker);
   }
 
-  /* -------------------- EMOJI PICKER -------------------- */
-
   const selectEmoji = useCallback(
     (emoji) => {
-      if (useChatStore.getState().sending) {
-        return;
-      }
+      if (useChatStore.getState().sending) return;
 
       const { start, end } = cursorRef.current;
 
@@ -277,8 +266,6 @@ function MessageInput({
 
       if (!result.inserted) return;
 
-      textRef.current = result.text;
-
       cursorRef.current = {
         start: result.cursor,
         end: result.cursor,
@@ -286,38 +273,20 @@ function MessageInput({
 
       pendingCursorRef.current = result.cursor;
 
-      setText(result.text);
-
-      onTyping?.(result.text);
-
-      // Keep the picker open so multiple emojis
-      // can be inserted without reopening it.
+      updateText(result.text);
     },
-    [onTyping]
+    [updateText]
   );
 
-  /* -------------------- GIF PICKER -------------------- */
+  /* -------------------- MEDIA -------------------- */
 
-  const selectGif = useCallback(
-    (gif) => {
-      if (!gif?.id) return;
-
-      if (useChatStore.getState().sending) {
-        return;
-      }
-
-      // Cancel pending file processing.
-
+  const replaceMedia = useCallback(
+    (nextMedia) => {
       selectionIdRef.current += 1;
 
+      setMedia(nextMedia);
       setProcessing(false);
-
-      // A GIF replaces an existing attachment.
-
-      setAttachment(null);
       setAttachmentError(null);
-
-      setSelectedGif(gif);
       setActivePicker(null);
 
       focusInput();
@@ -325,21 +294,30 @@ function MessageInput({
     [focusInput]
   );
 
-  function removeGif() {
-    if (sending) return;
+  const selectGif = useCallback(
+    (gif) => {
+      if (!gif?.id || useChatStore.getState().sending) {
+        return;
+      }
 
-    setSelectedGif(null);
+      replaceMedia({
+        type: "gif",
+        value: gif,
+      });
+    },
+    [replaceMedia]
+  );
 
-    focusInput();
-  }
+  const removeMedia = useCallback(() => {
+    if (useChatStore.getState().sending) return;
 
-  /* -------------------- FILE PICKER -------------------- */
+    replaceMedia(null);
+  }, [replaceMedia]);
 
   function openFilePicker() {
     if (pickerDisabled) return;
 
     setActivePicker(null);
-
     fileInputRef.current?.click();
   }
 
@@ -352,170 +330,103 @@ function MessageInput({
       return;
     }
 
-    const selectionId =
-      ++selectionIdRef.current;
+    const selectionId = ++selectionIdRef.current;
 
     setProcessing(true);
     setAttachmentError(null);
 
     try {
-      let processedFile;
+      const processedFile = await prepareFile(file);
 
-      if (isImageFile(file)) {
-        const extension =
-          getFileExtension(file.name);
-
-        const mimeType =
-          FILE_TYPES[extension];
-
-        const imageFile =
-          file.type === mimeType
-            ? file
-            : new File(
-                [file],
-                file.name,
-                {
-                  type: mimeType,
-                  lastModified: file.lastModified,
-                }
-              );
-
-        processedFile =
-          await compressImage(imageFile);
-      } else {
-        validateFile(file);
-
-        processedFile =
-          normalizeFile(file);
-      }
-
-      if (
-        selectionId !== selectionIdRef.current
-      ) {
+      if (selectionId !== selectionIdRef.current) {
         return;
       }
 
-      // A file replaces an existing GIF.
+      setMedia({
+        type: "file",
+        value: processedFile,
+      });
 
-      setAttachment(processedFile);
-      setSelectedGif(null);
       setActivePicker(null);
-
       focusInput();
     } catch (error) {
-      if (
-        selectionId === selectionIdRef.current
-      ) {
+      if (selectionId === selectionIdRef.current) {
         setAttachmentError(
-          error.message ||
-            "Unable to process attachment"
+          error?.message || "Unable to process attachment"
         );
       }
     } finally {
-      if (
-        selectionId === selectionIdRef.current
-      ) {
+      if (selectionId === selectionIdRef.current) {
         setProcessing(false);
       }
     }
   }
 
-  function removeAttachment() {
-    if (sending) return;
+  /* -------------------- KEYBOARD -------------------- */
 
-    selectionIdRef.current += 1;
-
-    setAttachment(null);
-    setAttachmentError(null);
-    setProcessing(false);
+  function clearReply() {
+    useChatStore.getState().clearReply();
   }
-
-  /* -------------------- KEYBOARD SHORTCUTS -------------------- */
 
   function handleKeyDown(event) {
     if (event.key !== "Escape") return;
 
     if (activePicker) {
       event.preventDefault();
-
       closePicker();
     } else if (replyTo) {
       event.preventDefault();
-
       clearReply();
-    } else if (selectedGif) {
+    } else if ((media || processing) && !sending) {
       event.preventDefault();
-
-      removeGif();
-    } else if (attachment) {
-      event.preventDefault();
-
-      removeAttachment();
+      removeMedia();
     }
   }
 
-  /* -------------------- SEND MESSAGE -------------------- */
+  /* -------------------- SUBMISSION -------------------- */
 
   async function handleSubmit(event) {
     event.preventDefault();
 
-    if (!canSend) return;
+    if (!canSend || useChatStore.getState().sending) {
+      return;
+    }
 
     const submittedText = textRef.current;
-    const submittedAttachment = attachment;
-    const submittedGif = selectedGif;
+    const submittedVersion = textVersionRef.current;
+    const submittedMedia = media;
 
     setActivePicker(null);
-
     onStopTyping?.();
 
-    const success = await send(
+    const success = await useChatStore.getState().send(
       submittedText.trim(),
-      submittedAttachment,
+      attachment,
       userId,
-      submittedGif?.id ?? null
+      selectedGif?.id ?? null
     );
 
     if (!success) return;
 
-    // Preserve any new text entered while sending.
+    // Preserve text edited while sending, even if
+    // the user eventually enters the same text again.
 
-    if (textRef.current === submittedText) {
+    if (textVersionRef.current === submittedVersion) {
       textRef.current = "";
+      textVersionRef.current += 1;
 
-      cursorRef.current = {
-        start: 0,
-        end: 0,
-      };
-
+      cursorRef.current = { start: 0, end: 0 };
       pendingCursorRef.current = null;
 
       setText("");
     }
 
-    setAttachment((current) =>
-      current === submittedAttachment
-        ? null
-        : current
-    );
-
-    setSelectedGif((current) =>
-      current === submittedGif
-        ? null
-        : current
+    setMedia((current) =>
+      current === submittedMedia ? null : current
     );
 
     setAttachmentError(null);
   }
-
-  /* -------------------- PLACEHOLDER -------------------- */
-
-  const placeholder =
-    attachment || selectedGif
-      ? "Add a caption..."
-      : replyTo
-        ? "Type a reply..."
-        : "Type a message...";
 
   /* -------------------- RENDER -------------------- */
 
@@ -524,16 +435,12 @@ function MessageInput({
       className="w-full min-w-0 shrink-0 bg-gray-950"
       onKeyDown={handleKeyDown}
     >
-      {/* GIF picker */}
-
       {gifPickerOpen && (
         <GifPicker
           onSelect={selectGif}
           onClose={closePicker}
         />
       )}
-
-      {/* Emoji picker */}
 
       {emojiPickerOpen && (
         <EmojiPicker
@@ -542,53 +449,31 @@ function MessageInput({
         />
       )}
 
-      {/* Reply preview */}
-
       <ReplyPreview
         message={replyTo}
         senderName={replySenderName}
         onCancel={clearReply}
       />
 
-      {/* Attachment errors */}
-
       {attachmentError && (
-        <p
-          role="alert"
-          className="px-4 py-2 text-sm text-red-400"
-        >
+        <p role="alert" className="px-4 py-2 text-sm text-red-400">
           {attachmentError}
         </p>
       )}
 
-      {/* File preview */}
-
-      {attachment && (
+      {media && (
         <AttachmentPreview
           file={attachment}
-          onRemove={removeAttachment}
-          uploading={sending}
-        />
-      )}
-
-      {/* GIF preview */}
-
-      {selectedGif && (
-        <GifPreview
           gif={selectedGif}
-          onRemove={removeGif}
           sending={sending}
+          onRemove={removeMedia}
         />
       )}
-
-      {/* Message composer */}
 
       <form
         onSubmit={handleSubmit}
         className="flex min-w-0 items-center gap-1 p-2 sm:gap-3 sm:p-4"
       >
-        {/* Hidden file input */}
-
         <input
           ref={fileInputRef}
           type="file"
@@ -597,67 +482,40 @@ function MessageInput({
           className="hidden"
         />
 
-        {/* Attachment button */}
-
-        <button
-          type="button"
+        <PickerButton
+          label="Attach a file"
+          active={Boolean(attachment)}
           disabled={pickerDisabled}
           onClick={openFilePicker}
-          title="Attach a file"
-          aria-label="Attach a file"
-          className={getPickerButtonClass(
-            Boolean(attachment)
-          )}
         >
           {processing ? (
-            <LoaderCircle
-              size={22}
-              className="animate-spin"
-            />
+            <LoaderCircle size={22} className="animate-spin" />
           ) : (
             <Paperclip size={22} />
           )}
-        </button>
+        </PickerButton>
 
-        {/* Emoji picker button */}
-
-        <button
-          type="button"
+        <PickerButton
+          label="Choose an emoji"
+          active={emojiPickerOpen}
+          expanded={emojiPickerOpen}
           disabled={pickerDisabled}
-          onClick={() =>
-            togglePicker(COMPOSER_PICKER.EMOJI)
-          }
-          title="Choose an emoji"
-          aria-label="Choose an emoji"
-          aria-expanded={emojiPickerOpen}
-          className={getPickerButtonClass(
-            emojiPickerOpen
-          )}
+          onClick={() => togglePicker(COMPOSER_PICKER.EMOJI)}
         >
           <Smile size={22} />
-        </button>
+        </PickerButton>
 
-        {/* GIF picker button */}
-
-        <button
-          type="button"
+        <PickerButton
+          label="Choose a GIF"
+          active={gifPickerOpen || Boolean(selectedGif)}
+          expanded={gifPickerOpen}
           disabled={pickerDisabled}
-          onClick={() =>
-            togglePicker(COMPOSER_PICKER.GIF)
-          }
-          title="Choose a GIF"
-          aria-label="Choose a GIF"
-          aria-expanded={gifPickerOpen}
-          className={getPickerButtonClass(
-            gifPickerOpen || Boolean(selectedGif)
-          )}
+          onClick={() => togglePicker(COMPOSER_PICKER.GIF)}
         >
           <span className="rounded border border-current px-1 py-0.5 text-[10px] font-bold leading-none">
             GIF
           </span>
-        </button>
-
-        {/* Text input */}
+        </PickerButton>
 
         <input
           ref={inputRef}
@@ -673,8 +531,6 @@ function MessageInput({
           className="block min-w-0 flex-1 rounded-xl border border-gray-700 bg-gray-800 px-3 py-3 text-white placeholder-gray-400 outline-none transition-colors focus:border-blue-500 sm:px-4"
         />
 
-        {/* Send button */}
-
         <button
           type="submit"
           disabled={!canSend}
@@ -682,10 +538,7 @@ function MessageInput({
           className="flex shrink-0 items-center justify-center rounded-xl bg-blue-600 p-3 text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {sending ? (
-            <LoaderCircle
-              size={20}
-              className="animate-spin"
-            />
+            <LoaderCircle size={20} className="animate-spin" />
           ) : (
             <Send size={20} />
           )}

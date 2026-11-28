@@ -3,7 +3,13 @@
 import { createClient } from "@/lib/supabase/client";
 
 const supabase = createClient();
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidId(id) {
+  return typeof id === "string" && UUID_PATTERN.test(id);
+}
 
 export async function createTypingChannel({
   conversationId,
@@ -11,14 +17,15 @@ export async function createTypingChannel({
   onTyping,
   onStatus,
 }) {
-  if (!conversationId || !userId) {
-    throw new Error("Conversation ID and user ID are required.");
+  if (!isValidId(conversationId) || !isValidId(userId)) {
+    throw new Error("Invalid conversation or user ID");
   }
 
   await supabase.realtime.setAuth();
 
   let closed = false;
   let connected = false;
+  let advertisedTyping = false;
 
   const channel = supabase.channel(
     `typing:${conversationId}`,
@@ -33,50 +40,62 @@ export async function createTypingChannel({
     }
   );
 
-  // Receive typing events.
-  channel
-    .on(
-      "broadcast",
-      { event: "typing" },
-      ({ payload }) => {
-        if (
-          closed ||
-          !payload ||
-          typeof payload.userId !== "string" ||
-          !UUID_PATTERN.test(payload.userId) ||
-          typeof payload.typing !== "boolean" ||
-          payload.userId === userId
-        ) {
-          return;
-        }
-
-        onTyping?.({
-          userId: payload.userId,
-          typing: payload.typing,
-        });
-      }
-    )
-    .subscribe((status, error) => {
-      if (closed) return;
-
-      connected = status === "SUBSCRIBED";
-
-      onStatus?.(connected);
-
-      if (
-        status === "CHANNEL_ERROR" || status === "TIMED_OUT"
-      ) {
-        console.warn("Typing channel:", status, error);
-      }
-    });
-
-  // Broadcast local typing activity.
-  function broadcast(typing) {
+  function handleTyping({ payload }) {
     if (
-      closed || !connected || typeof typing !== "boolean"
+      closed ||
+      !connected ||
+      !isValidId(payload?.userId) ||
+      payload.userId === userId ||
+      typeof payload.typing !== "boolean"
     ) {
       return;
     }
+
+    onTyping?.({
+      userId: payload.userId,
+      typing: payload.typing,
+    });
+  }
+
+  function handleStatus(status, error) {
+    if (closed) return;
+
+    const nextConnected = status === "SUBSCRIBED";
+
+    if (connected !== nextConnected) {
+      connected = nextConnected;
+
+      if (!connected) {
+        advertisedTyping = false;
+      }
+
+      onStatus?.(connected);
+    }
+
+    if (
+      status === "CHANNEL_ERROR" ||
+      status === "TIMED_OUT"
+    ) {
+      console.warn("Typing channel:", status, error);
+    }
+  }
+
+  function broadcast(typing) {
+    if (
+      closed ||
+      !connected ||
+      typeof typing !== "boolean"
+    ) {
+      return false;
+    }
+
+    // Repeated true events are intentional heartbeats.
+    // Repeated false events are unnecessary.
+    if (!typing && !advertisedTyping) {
+      return false;
+    }
+
+    advertisedTyping = typing;
 
     void channel
       .send({
@@ -88,7 +107,7 @@ export async function createTypingChannel({
         },
       })
       .then((status) => {
-        if (status !== "ok" && !closed) {
+        if (!closed && status !== "ok") {
           console.warn(
             "Typing broadcast status:",
             status
@@ -96,14 +115,21 @@ export async function createTypingChannel({
         }
       })
       .catch((error) => {
-        console.warn("Typing broadcast failed:", error);
+        if (!closed) {
+          console.warn(
+            "Typing broadcast failed:",
+            error
+          );
+        }
       });
+
+    return true;
   }
 
-  // Remove the subscription.
   function close() {
     if (closed) return;
 
+    // Only sends false if typing was advertised.
     broadcast(false);
 
     closed = true;
@@ -112,8 +138,25 @@ export async function createTypingChannel({
     void supabase.removeChannel(channel);
   }
 
+  try {
+    channel
+      .on(
+        "broadcast",
+        { event: "typing" },
+        handleTyping
+      )
+      .subscribe(handleStatus);
+  } catch (error) {
+    close();
+    throw error;
+  }
+
   return {
     broadcast,
     close,
+
+    isConnected() {
+      return connected && !closed;
+    },
   };
 }

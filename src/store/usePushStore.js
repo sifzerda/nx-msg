@@ -30,39 +30,41 @@ let generation = 0;
 let activeRequest = null;
 
 const usePushStore = create((set, get) => {
-  function runOperation({
+  function runOperation(
     operation,
-    onSuccess,
-    fallback,
-    busyKey = "loading",
-    initialState = {},
-  }) {
-    const currentGeneration = generation;
+    {
+      fallback,
+      busyKey = "loading",
+      initialState = {},
+    }
+  ) {
+    const current = generation;
 
-    const isCurrent = () =>
-      currentGeneration === generation;
+    let resolve;
+    let reject;
 
-    let resolveOperation;
-    let rejectOperation;
-
-    const operationResult = new Promise((resolve, reject) => {
-      resolveOperation = resolve;
-      rejectOperation = reject;
+    const result = new Promise((res, rej) => {
+      resolve = res;
+      reject = rej;
     });
 
-    const request = operationResult
-      .then((result) => {
-        if (!isCurrent()) return false;
+    const request = result
+      .then((value) => {
+        if (current !== generation) {
+          return false;
+        }
 
         set({
-          ...onSuccess(result),
           initialized: true,
+          enabled: value.enabled === true,
+          preference: value.preference === true,
+          warning: value.warning || null,
         });
 
         return true;
       })
       .catch((error) => {
-        if (isCurrent()) {
+        if (current === generation) {
           set({
             error: error?.message || fallback,
           });
@@ -75,12 +77,11 @@ const usePushStore = create((set, get) => {
           activeRequest = null;
         }
 
-        if (isCurrent()) {
+        if (current === generation) {
           set({ [busyKey]: false });
         }
       });
 
-    // Register before notifying store subscribers.
     activeRequest = request;
 
     set({
@@ -91,25 +92,22 @@ const usePushStore = create((set, get) => {
     });
 
     try {
-      if (!isCurrent() || get().signingOut) {
-        throw new Error("Notification operation cancelled");
+      if (
+        current !== generation ||
+        get().signingOut
+      ) {
+        throw new Error(
+          "Notification operation cancelled"
+        );
       }
 
-      // Execute synchronously to preserve browser
-      // user activation when requesting permission.
-      resolveOperation(operation());
+      // Preserve browser user activation.
+      resolve(operation());
     } catch (error) {
-      rejectOperation(error);
+      reject(error);
     }
 
     return request;
-  }
-
-  function applyResult(result) {
-    return {
-      enabled: result.enabled,
-      preference: result.preference,
-    };
   }
 
   function canMutate() {
@@ -132,29 +130,25 @@ const usePushStore = create((set, get) => {
       return Promise.resolve(false);
     }
 
-    if (activeRequest) {
-      if (state.userId === userId) {
-        return activeRequest;
-      }
-
-      const currentGeneration = generation;
-
-      return activeRequest.then(() => {
-        if (
-          generation !== currentGeneration ||
-          get().signingOut
-        ) {
-          return false;
-        }
-
-        return initialize(userId, { force });
-      });
+    if (
+      state.userId &&
+      state.userId !== userId
+    ) {
+      return Promise.resolve(false);
     }
 
+    if (activeRequest) {
+      return state.userId === userId
+        ? activeRequest
+        : Promise.resolve(false);
+    }
+
+    const sameUser = state.userId === userId;
+
     if (
-      !force &&
+      sameUser &&
       state.initialized &&
-      state.userId === userId
+      !force
     ) {
       return Promise.resolve(true);
     }
@@ -173,21 +167,19 @@ const usePushStore = create((set, get) => {
       return Promise.resolve(true);
     }
 
-    return runOperation({
-      operation: () => restorePushNotifications(userId),
+    return runOperation(
+      () => restorePushNotifications(userId),
+      {
+        fallback: "Failed to restore notifications",
+        busyKey: "checking",
 
-      onSuccess: applyResult,
-
-      fallback: "Failed to restore notifications",
-
-      busyKey: "checking",
-
-      initialState: {
-        ...INITIAL_STATE,
-        userId,
-        supported: true,
-      },
-    });
+        initialState: {
+          ...(sameUser ? {} : INITIAL_STATE),
+          userId,
+          supported: true,
+        },
+      }
+    );
   }
 
   function enable() {
@@ -195,13 +187,12 @@ const usePushStore = create((set, get) => {
       return Promise.resolve(false);
     }
 
-    return runOperation({
-      operation: enablePushNotifications,
-
-      onSuccess: applyResult,
-
-      fallback: "Failed to enable notifications",
-    });
+    return runOperation(
+      enablePushNotifications,
+      {
+        fallback: "Failed to enable notifications",
+      }
+    );
   }
 
   function disable() {
@@ -211,17 +202,20 @@ const usePushStore = create((set, get) => {
 
     const { userId } = get();
 
-    return runOperation({
-      operation: () => disablePushNotifications(userId),
+    return runOperation(
+      () => disablePushNotifications(userId),
+      {
+        fallback: "Failed to disable notifications",
+      }
+    );
+  }
 
-      onSuccess: (result) => ({
-        enabled: false,
-        preference: false,
-        warning: result.warning || null,
-      }),
+  async function prepareForLogout() {
+    set({ signingOut: true });
 
-      fallback: "Failed to disable notifications",
-    });
+    if (activeRequest) {
+      await activeRequest;
+    }
   }
 
   return {
@@ -230,32 +224,22 @@ const usePushStore = create((set, get) => {
     initialize,
     enable,
     disable,
+    prepareForLogout,
 
     refresh: () =>
       initialize(get().userId, { force: true }),
 
-    clearError: () => {
+    clearError: () =>
       set({
         error: null,
         warning: null,
-      });
-    },
+      }),
 
-    prepareForLogout: async () => {
-      set({ signingOut: true });
-
-      if (activeRequest) {
-        await activeRequest;
-      }
-    },
-
-    cancelLogout: () => {
-      set({ signingOut: false });
-    },
+    cancelLogout: () =>
+      set({ signingOut: false }),
 
     reset: () => {
       generation++;
-
       set({ ...INITIAL_STATE });
     },
   };

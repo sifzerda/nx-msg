@@ -1,17 +1,66 @@
 // src/app/api/push/unsubscribe/route.js
 
 import { NextResponse } from "next/server";
+
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
-function respond(error, status) {
-  return NextResponse.json({ error }, { status });
+function json(body, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+function fail(error, status) {
+  return json({ error }, status);
 }
 
 export async function POST(request) {
   try {
+    if (
+      request.headers.get("origin") !==
+      new URL(request.url).origin
+    ) {
+      return fail("Invalid origin", 403);
+    }
+
+    const body = await request
+      .json()
+      .catch(() => null);
+
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body)
+    ) {
+      return fail("Invalid JSON body", 400);
+    }
+
+    const endpoint = body.endpoint ?? null;
+
+    const rememberPreference =
+      body.rememberPreference === true;
+
+    if (
+      endpoint !== null &&
+      (
+        typeof endpoint !== "string" ||
+        !endpoint ||
+        endpoint.length > 4096
+      )
+    ) {
+      return fail("Invalid endpoint", 400);
+    }
+
+    if (!endpoint && !rememberPreference) {
+      return fail("Endpoint is required", 400);
+    }
+
     const supabase = await createClient();
 
     const {
@@ -20,89 +69,43 @@ export async function POST(request) {
     } = await supabase.auth.getUser();
 
     if (authError || !user) {
-      return respond("Unauthorized", 401);
-    }
-
-    if (
-      request.headers.get("origin") !==
-      new URL(request.url).origin
-    ) {
-      return respond("Invalid origin", 403);
-    }
-
-    let body;
-
-    try {
-      body = await request.json();
-    } catch {
-      return respond("Invalid JSON body", 400);
-    }
-
-    const endpoint = body?.endpoint;
-    const rememberPreference =
-      body?.rememberPreference === true;
-
-    if (
-      typeof endpoint !== "string" ||
-      !endpoint ||
-      endpoint.length > 4096
-    ) {
-      return respond("Invalid endpoint", 400);
+      return fail("Unauthorized", 401);
     }
 
     const admin = createAdminClient();
 
-    // An explicit disable must persist across logins.
-    // Do this before deleting the subscription so
-    // notification delivery is disabled immediately.
-    if (rememberPreference) {
-      const { error: preferenceError } = await admin
-        .from("profiles")
-        .update({ notifications_enabled: false })
-        .eq("id", user.id);
+    const { data, error } = await admin.rpc(
+      "unregister_push_subscription",
+      {
+        target_user_id: user.id,
 
-      if (preferenceError) {
-        console.error(
-          "[Push] Preference update failed:",
-          preferenceError
-        );
+        subscription_endpoint: endpoint,
 
-        return respond(
-          "Could not save notification preference",
-          500
-        );
+        remember_preference: rememberPreference,
       }
-    }
-
-    const { error: deleteError } = await admin
-      .from("push_subscriptions")
-      .delete()
-      .eq("user_id", user.id)
-      .eq("endpoint", endpoint);
-
-    if (deleteError) {
-      console.error(
-        "[Push] Unsubscribe failed:",
-        deleteError
-      );
-
-      return respond(
-        "Could not remove push subscription",
-        500
-      );
-    }
-
-    return NextResponse.json({
-      success: true,
-    });
-  } catch (error) {
-    console.error(
-      "[Push] Unexpected unsubscribe error:",
-      error
     );
 
-    return respond(
-      "Unexpected push unsubscribe error",
+    if (error) throw error;
+
+    if (data === "profile_not_found") {
+      return fail("Profile not found", 404);
+    }
+
+    if (data !== "success") {
+      throw new Error(
+        "Unexpected unsubscribe result"
+      );
+    }
+
+    return json({ success: true });
+  } catch (error) {
+    console.error("[Push] Unsubscribe failed:", {
+      message: error?.message,
+      code: error?.code,
+    });
+
+    return fail(
+      "Could not remove push subscription",
       500
     );
   }

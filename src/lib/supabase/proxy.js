@@ -3,12 +3,18 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 
+const SUPABASE_URL =
+  process.env.NEXT_PUBLIC_SUPABASE_URL;
+
+const SUPABASE_KEY =
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+
 export async function updateSession(request) {
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+    SUPABASE_URL,
+    SUPABASE_KEY,
     {
       cookies: {
         getAll() {
@@ -16,15 +22,34 @@ export async function updateSession(request) {
         },
 
         setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value }) => {
+          if (!cookiesToSet.length) return;
+
+          for (const { name, value } of cookiesToSet) {
             request.cookies.set(name, value);
-          });
+          }
 
-          response = NextResponse.next({ request });
+          const updatedResponse =
+            NextResponse.next({ request });
 
-          cookiesToSet.forEach(({ name, value, options }) => {
-            response.cookies.set(name, value, options);
-          });
+          // Preserve any cookies already written during
+          // this session refresh operation.
+          for (const cookie of response.cookies.getAll()) {
+            updatedResponse.cookies.set(cookie);
+          }
+
+          for (const {
+            name,
+            value,
+            options,
+          } of cookiesToSet) {
+            updatedResponse.cookies.set(
+              name,
+              value,
+              options
+            );
+          }
+
+          response = updatedResponse;
         },
       },
     }
@@ -34,4 +59,3 @@ export async function updateSession(request) {
 
   return response;
 }
-

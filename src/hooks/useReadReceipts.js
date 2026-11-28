@@ -22,48 +22,85 @@ export default function useReadReceipts(
     }
 
     let active = true;
-    let fallbackTimer = null;
+    let connected = false;
+    let refreshRequest = null;
+    let refreshPending = false;
+
+    /* -------------------- TIMESTAMP -------------------- */
 
     function updateTimestamp(timestamp) {
       if (!active || !timestamp) return;
 
+      const time = Date.parse(timestamp);
+
+      if (!Number.isFinite(time)) return;
+
       setReceipt((current) => {
         if (
           current?.conversationId === conversationId &&
-          Date.parse(current.timestamp) >=
-            Date.parse(timestamp)
+          current?.userId === userId &&
+          Date.parse(current.timestamp) >= time
         ) {
           return current;
         }
 
         return {
           conversationId,
+          userId,
           timestamp,
         };
       });
     }
 
-    async function refresh() {
+    /* -------------------- SYNCHRONIZATION -------------------- */
+
+    function refresh({ force = false } = {}) {
       if (!active) return;
 
-      try {
-        const timestamp =
-          await getRecipientReadAt(conversationId);
-
-        updateTimestamp(timestamp);
-      } catch (error) {
-        if (active) {
-          console.error(
-            "Failed to load read receipts:",
-            error
-          );
+      if (refreshRequest) {
+        if (force) {
+          refreshPending = true;
         }
+
+        return refreshRequest;
       }
+
+      refreshRequest = Promise.resolve()
+        .then(async () => {
+          do {
+            refreshPending = false;
+
+            if (!active) return;
+
+            try {
+              const timestamp =
+                await getRecipientReadAt(conversationId);
+
+              updateTimestamp(timestamp);
+            } catch (error) {
+              if (active) {
+                console.error(
+                  "Failed to load read receipts:",
+                  error
+                );
+              }
+            }
+          } while (active && refreshPending);
+        })
+        .finally(() => {
+          refreshRequest = null;
+        });
+
+      return refreshRequest;
     }
+
+    /* -------------------- REALTIME -------------------- */
 
     function handleReceipt(member) {
       if (
         !active ||
+        member?.conversation_id !== conversationId ||
+        !member.user_id ||
         member.user_id === userId
       ) {
         return;
@@ -72,51 +109,49 @@ export default function useReadReceipts(
       updateTimestamp(member.last_read_at);
     }
 
-    function stopFallback() {
-      if (fallbackTimer !== null) {
-        clearInterval(fallbackTimer);
-        fallbackTimer = null;
+    function handleStatus(status) {
+      if (!active) return;
+
+      if (status === "SUBSCRIBED") {
+        connected = true;
+
+        // Reconcile updates that may have occurred
+        // before the subscription became ready.
+        void refresh({ force: true });
+
+        return;
       }
-    }
 
-    function startFallback() {
-      if (fallbackTimer !== null) return;
-
-      fallbackTimer = setInterval(() => {
-        if (
-          document.visibilityState === "visible"
-        ) {
-          void refresh();
-        }
-      }, 15000);
+      if (
+        status === "CHANNEL_ERROR" ||
+        status === "TIMED_OUT" ||
+        status === "CLOSED"
+      ) {
+        connected = false;
+      }
     }
 
     const unsubscribe = subscribeToReadReceipts(
       conversationId,
       handleReceipt,
-      (status) => {
-        if (!active) return;
-
-        if (status === "SUBSCRIBED") {
-          stopFallback();
-
-          // Load initial state and reconcile
-          // updates missed during disconnection.
-          void refresh();
-        }
-
-        if (
-          status === "CHANNEL_ERROR" ||
-          status === "TIMED_OUT" ||
-          status === "CLOSED"
-        ) {
-          startFallback();
-        }
-      }
+      handleStatus
     );
+
+    /* -------------------- BROWSER EVENTS -------------------- */
 
     function handleVisibility() {
       if (
+        active &&
+        document.visibilityState === "visible"
+      ) {
+        void refresh();
+      }
+    }
+
+    function handleOnline() {
+      if (
+        active &&
+        !connected &&
         document.visibilityState === "visible"
       ) {
         void refresh();
@@ -128,25 +163,40 @@ export default function useReadReceipts(
       handleVisibility
     );
 
-    // Fallback while the channel connects.
-    startFallback();
+    window.addEventListener(
+      "online",
+      handleOnline
+    );
+
+    // Load the current receipt without waiting
+    // for the Realtime subscription to connect.
+    void refresh();
+
+    /* -------------------- CLEANUP -------------------- */
 
     return () => {
       active = false;
+      refreshPending = false;
 
-      stopFallback();
       unsubscribe();
 
       document.removeEventListener(
         "visibilitychange",
         handleVisibility
       );
+
+      window.removeEventListener(
+        "online",
+        handleOnline
+      );
     };
   }, [conversationId, userId, enabled]);
 
   if (
     !enabled ||
-    receipt?.conversationId !== conversationId
+    !userId ||
+    receipt?.conversationId !== conversationId ||
+    receipt?.userId !== userId
   ) {
     return null;
   }

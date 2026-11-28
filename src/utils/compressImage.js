@@ -1,71 +1,104 @@
 // src/utils/compressImage.js
 
 import {
-  ALLOWED_IMAGE_TYPES,
   MAX_IMAGE_SIZE,
-  MAX_SOURCE_IMAGE_SIZE,
+  TARGET_IMAGE_SIZE,
   MAX_IMAGE_DIMENSION,
   IMAGE_QUALITY,
+  MIN_IMAGE_QUALITY,
+  IMAGE_QUALITY_STEP,
+  IMAGE_EXTENSIONS,
 } from "@/constants/attachments";
 
-function canvasToBlob(canvas, type, quality) {
+import {
+  validateSourceImage,
+  normalizeFile,
+} from "@/utils/fileUtils";
+
+/* -------------------- HELPERS -------------------- */
+
+function canvasToBlob(canvas, quality) {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
       (blob) => {
-        if (blob) {
-          resolve(blob);
-        } else {
-          reject(new Error("Image compression failed"));
+        if (!blob || !blob.size) {
+          reject(
+            new Error("Image compression failed")
+          );
+          return;
         }
+
+        resolve(blob);
       },
-      type,
+      "image/webp",
       quality
     );
   });
 }
 
+function getImageDimensions(width, height) {
+  const scale = Math.min(
+    1,
+    MAX_IMAGE_DIMENSION / Math.max(width, height)
+  );
+
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+    resized: scale < 1,
+  };
+}
+
+function createImageFile(blob, originalFile) {
+  const extension = IMAGE_EXTENSIONS[blob.type];
+
+  if (!extension) {
+    throw new Error("Unsupported compressed image format");
+  }
+
+  const name =
+    originalFile.name.replace(/\.[^.]+$/, "") +
+    `.${extension}`;
+
+  return new File([blob], name, {
+    type: blob.type,
+    lastModified: originalFile.lastModified,
+  });
+}
+
+/* -------------------- COMPRESSION -------------------- */
+
 export async function compressImage(file) {
-  if (!file) {
-    throw new Error("No image selected");
-  }
+  const info = validateSourceImage(file);
 
-  if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
-    throw new Error(
-      "Please select a JPEG, PNG or WebP image"
-    );
-  }
+  const source = normalizeFile(file, info);
 
-  if (file.size > MAX_SOURCE_IMAGE_SIZE) {
-    throw new Error(
-      "Original image must be smaller than 30 MB"
-    );
-  }
-
-  const bitmap = await createImageBitmap(file);
-
-  const canvas = document.createElement("canvas");
+  let bitmap = null;
+  let canvas = null;
 
   try {
-    const scale = Math.min(
-      1,
-      MAX_IMAGE_DIMENSION /
-        Math.max(bitmap.width, bitmap.height)
+    bitmap = await createImageBitmap(source);
+
+    const dimensions = getImageDimensions(
+      bitmap.width,
+      bitmap.height
     );
 
-    // Avoid unnecessary recompression.
-    if (scale === 1 && file.size <= MAX_IMAGE_SIZE) {
-      return file;
+    // Keep small images that already meet our requirements.
+
+    if (
+      !dimensions.resized &&
+      source.size <= TARGET_IMAGE_SIZE
+    ) {
+      return source;
     }
 
-    canvas.width = Math.max(
-      1,
-      Math.round(bitmap.width * scale)
-    );
+    // Allocate the canvas only when compression is required.
 
-    canvas.height = Math.max(
-      1,
-      Math.round(bitmap.height * scale)
-    );
+    canvas = document.createElement("canvas");
+
+    canvas.width = dimensions.width;
+    canvas.height = dimensions.height;
 
     const context = canvas.getContext("2d");
 
@@ -80,55 +113,68 @@ export async function compressImage(file) {
       bitmap,
       0,
       0,
-      canvas.width,
-      canvas.height
+      dimensions.width,
+      dimensions.height
     );
+
+    // The canvas now contains the pixels.
+    // Release the original decoded bitmap.
+
+    bitmap.close();
+    bitmap = null;
 
     let quality = IMAGE_QUALITY;
-    let blob = await canvasToBlob(
-      canvas,
-      "image/webp",
-      quality
-    );
+    let bestBlob = await canvasToBlob(canvas, quality);
+
+    // Browsers may fall back to PNG if WebP encoding
+    // is unsupported. PNG ignores the quality argument.
 
     while (
-      blob.size > MAX_IMAGE_SIZE &&
-      quality > 0.35
+      bestBlob.type === "image/webp" &&
+      bestBlob.size > TARGET_IMAGE_SIZE &&
+      quality > MIN_IMAGE_QUALITY
     ) {
-      quality -= 0.1;
+      quality = Math.max(
+        MIN_IMAGE_QUALITY,
+        Number(
+          (quality - IMAGE_QUALITY_STEP).toFixed(2)
+        )
+      );
 
-      blob = await canvasToBlob(
+      const candidate = await canvasToBlob(
         canvas,
-        "image/webp",
         quality
       );
+
+      if (candidate.size < bestBlob.size) {
+        bestBlob = candidate;
+      }
     }
 
-    if (blob.size > MAX_IMAGE_SIZE) {
+    // Never replace an appropriately sized original
+    // with a larger compressed version.
+
+    if (
+      !dimensions.resized &&
+      source.size <= MAX_IMAGE_SIZE &&
+      source.size <= bestBlob.size
+    ) {
+      return source;
+    }
+
+    if (bestBlob.size > MAX_IMAGE_SIZE) {
       throw new Error(
         "Image is too large after compression"
       );
     }
 
-    const extension =
-      blob.type === "image/webp"
-        ? "webp"
-        : blob.type === "image/jpeg"
-          ? "jpg"
-          : "png";
-
-    const name =
-      file.name.replace(/\.[^.]+$/, "") +
-      `.${extension}`;
-
-    return new File([blob], name, {
-      type: blob.type,
-      lastModified: Date.now(),
-    });
+    return createImageFile(bestBlob, source);
   } finally {
-    bitmap.close();
+    bitmap?.close();
 
-    canvas.width = 0;
-    canvas.height = 0;
+    if (canvas) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
   }
 }

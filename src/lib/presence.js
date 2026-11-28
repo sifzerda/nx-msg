@@ -4,20 +4,14 @@ import { createClient } from "@/lib/supabase/client";
 
 const supabase = createClient();
 
-/* -------------------- CONSTANTS -------------------- */
-
 const CHANNEL_NAME = "messenger-presence";
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/* -------------------- VALIDATION -------------------- */
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function isValidUserId(userId) {
-  return (
-    typeof userId === "string" && UUID_PATTERN.test(userId)
-  );
+function isValidUserId(id) {
+  return typeof id === "string" && UUID_PATTERN.test(id);
 }
-
-/* -------------------- PRESENCE -------------------- */
 
 export function subscribeToPresence(userId, onChange) {
   if (!isValidUserId(userId)) {
@@ -30,38 +24,51 @@ export function subscribeToPresence(userId, onChange) {
 
   let closed = false;
   let channel = null;
-
-  /* -------------------- SYNCHRONISE -------------------- */
+  let connected = false;
 
   function updatePresence() {
     if (closed || !channel) return;
 
     const state = channel.presenceState();
-    const onlineUsers = Object.keys(state).filter((id) => isValidUserId(id) && state[id]?.length > 0);
 
-    onChange(onlineUsers);
+    onChange(
+      Object.keys(state).filter(
+        (id) =>
+          isValidUserId(id) &&
+          state[id]?.length > 0
+      )
+    );
   }
-
-  /* -------------------- STATUS -------------------- */
 
   async function handleStatus(status, error) {
     if (closed || !channel) return;
 
     if (status === "SUBSCRIBED") {
+      if (connected) return;
+
+      connected = true;
+
       try {
         const result = await channel.track({
           online: true,
         });
 
-        if (closed) return;
+        if (!closed && result !== "ok") {
+          connected = false;
 
-        if (result !== "ok") {
-          console.warn("Presence tracking status:", result);
+          console.warn(
+            "Presence tracking status:",
+            result
+          );
         }
-
-      } catch (trackError) {
+      } catch (error) {
         if (!closed) {
-          console.error("Presence tracking failed:", trackError);
+          connected = false;
+
+          console.error(
+            "Presence tracking failed:",
+            error
+          );
         }
       }
 
@@ -73,29 +80,40 @@ export function subscribeToPresence(userId, onChange) {
       status === "TIMED_OUT" ||
       status === "CLOSED"
     ) {
+      connected = false;
+
       onChange([]);
 
       if (status !== "CLOSED") {
-        console.warn("Presence channel:", status, error);
+        console.warn(
+          "Presence channel:",
+          status,
+          error
+        );
       }
     }
   }
 
-  /* -------------------- CONNECT -------------------- */
+  function removeChannel() {
+    if (!channel) return;
+
+    const current = channel;
+
+    channel = null;
+    connected = false;
+
+    void supabase.removeChannel(current);
+  }
 
   async function connect() {
     try {
-      // Authenticate the Realtime connection.
       await supabase.realtime.setAuth();
 
-      // The component may have unmounted while
-      // authentication was being performed.
       if (closed) return;
 
       channel = supabase.channel(CHANNEL_NAME, {
         config: {
           private: true,
-
           presence: {
             key: userId,
           },
@@ -103,41 +121,33 @@ export function subscribeToPresence(userId, onChange) {
       });
 
       channel
-        .on("presence", { event: "sync" }, updatePresence)
+        .on(
+          "presence",
+          { event: "sync" },
+          updatePresence
+        )
         .subscribe(handleStatus);
-
     } catch (error) {
       if (closed) return;
 
+      removeChannel();
+
       onChange([]);
 
-      console.error("Failed to connect presence channel:", error);
-
-      if (channel) {
-        const failedChannel = channel;
-
-        channel = null;
-
-        void supabase.removeChannel(failedChannel);
-      }
+      console.error(
+        "Failed to connect presence channel:",
+        error
+      );
     }
   }
 
   void connect();
 
-  /* -------------------- CLEANUP -------------------- */
-
-  return function unsubscribe() {
+  return () => {
     if (closed) return;
 
     closed = true;
 
-    if (channel) {
-      const currentChannel = channel;
-
-      channel = null;
-
-      void supabase.removeChannel(currentChannel);
-    }
+    removeChannel();
   };
 }

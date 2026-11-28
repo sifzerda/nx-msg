@@ -62,7 +62,6 @@ const {
     markChatRead,
     getRecipientReadAt,
     subscribeToAllMessages,
-    subscribeToMessages,
     subscribeToReadReceipts,
     validateMessage,
 } = require("@/lib/messages");
@@ -1742,110 +1741,25 @@ describe("Messaging API - global message subscription", () => {
     });
 });
 
-describe("Messaging API - conversation subscription", () => {
-    test("creates a conversation-specific channel", () => {
-        subscribeToMessages(
-            CHAT_ID,
-            jest.fn()
-        );
-
-        expect(mockChannel).toHaveBeenCalledWith(
-            `chat:${CHAT_ID}`
-        );
-    });
-
-    test("filters events to the requested conversation", () => {
-        subscribeToMessages(
-            CHAT_ID,
-            jest.fn()
-        );
-
-        expect(mockOn).toHaveBeenCalledWith(
-            "postgres_changes",
-            {
-                event: "INSERT",
-                schema: "public",
-                table: "messages",
-                filter: `conversation_id=eq.${CHAT_ID}`,
-            },
-            expect.any(Function)
-        );
-    });
-
-    test("forwards incoming conversation messages", () => {
-        const onMessage = jest.fn();
-
-        subscribeToMessages(
-            CHAT_ID,
-            onMessage
-        );
-
-        const callback =
-            mockOn.mock.calls[0][2];
-
-        callback({
-            new: mockMessage,
-        });
-
-        expect(onMessage).toHaveBeenCalledWith(
-            mockMessage
-        );
-    });
-
-    test("removes the conversation channel", () => {
-        const unsubscribe =
-            subscribeToMessages(
-                CHAT_ID,
-                jest.fn()
-            );
-
-        unsubscribe();
-
-        expect(mockRemoveChannel).toHaveBeenCalledWith(
-            mockRealtimeChannel
-        );
-    });
-});
-
 describe("Messaging API - read receipt subscription", () => {
     test("creates a read receipt channel", () => {
-        subscribeToReadReceipts(
-            CHAT_ID,
-            jest.fn()
-        );
+        subscribeToReadReceipts(CHAT_ID, jest.fn());
 
-        expect(mockChannel).toHaveBeenCalledWith(
-            expect.stringMatching(
-                /^read-receipts:chat-1:/
-            )
-        );
+        expect(mockChannel).toHaveBeenCalledWith(expect.stringMatching(/^read-receipts:chat-1:/));
     });
 
     test("uses unique channel names", () => {
-        subscribeToReadReceipts(
-            CHAT_ID,
-            jest.fn()
-        );
+        subscribeToReadReceipts(CHAT_ID, jest.fn());
+        subscribeToReadReceipts(CHAT_ID, jest.fn());
 
-        subscribeToReadReceipts(
-            CHAT_ID,
-            jest.fn()
-        );
-
-        const first =
-            mockChannel.mock.calls[0][0];
-
-        const second =
-            mockChannel.mock.calls[1][0];
+        const first = mockChannel.mock.calls[0][0];
+        const second = mockChannel.mock.calls[1][0];
 
         expect(first).not.toBe(second);
     });
 
     test("subscribes to conversation member updates", () => {
-        subscribeToReadReceipts(
-            CHAT_ID,
-            jest.fn()
-        );
+        subscribeToReadReceipts(CHAT_ID, jest.fn());
 
         expect(mockOn).toHaveBeenCalledWith(
             "postgres_changes",
@@ -1862,10 +1776,7 @@ describe("Messaging API - read receipt subscription", () => {
     test("forwards incoming read receipt updates", () => {
         const onReceipt = jest.fn();
 
-        subscribeToReadReceipts(
-            CHAT_ID,
-            onReceipt
-        );
+        subscribeToReadReceipts(CHAT_ID, onReceipt);
 
         const member = {
             conversation_id: CHAT_ID,
@@ -1873,16 +1784,13 @@ describe("Messaging API - read receipt subscription", () => {
             last_read_at: "2026-01-01T12:00:00Z",
         };
 
-        const callback =
-            mockOn.mock.calls[0][2];
+        const callback = mockOn.mock.calls[0][2];
 
         callback({
             new: member,
         });
 
-        expect(onReceipt).toHaveBeenCalledWith(
-            member
-        );
+        expect(onReceipt).toHaveBeenCalledWith(member);
     });
 
     test("forwards read receipt connection status", () => {

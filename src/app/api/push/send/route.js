@@ -4,8 +4,15 @@ import { NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 
 import { createAdminClient } from "@/lib/supabase/admin";
-import { sendWebPush } from "@/lib/webPush";
-import { getNotificationPreview } from "@/utils/messageUtils";
+
+import {
+  sendWebPush,
+  isValidPushEndpoint,
+} from "@/lib/webPush";
+
+import {
+  getNotificationPreview,
+} from "@/utils/messageUtils";
 
 export const runtime = "nodejs";
 
@@ -13,16 +20,6 @@ export const runtime = "nodejs";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-const MESSAGE_COLUMNS = [
-  "id",
-  "conversation_id",
-  "sender_id",
-  "content",
-  "gif_id",
-  "attachment_type",
-  "attachment_name",
-].join(", ");
 
 const EXPIRED_STATUS_CODES = new Set([
   404,
@@ -98,53 +95,27 @@ function isValidMessageId(messageId) {
 
 /* -------------------- DATABASE -------------------- */
 
-async function getMessage(admin, messageId) {
-  const { data, error } = await admin
-    .from("messages")
-    .select(MESSAGE_COLUMNS)
-    .eq("id", messageId)
-    .maybeSingle();
-
-  if (error) {
-    throw error;
-  }
-
-  return data;
-}
-
-async function getEligibleSubscriptions(
-  admin,
-  messageId
-) {
+async function getPushDelivery(admin, messageId) {
   const { data, error } = await admin.rpc(
-    "get_message_push_subscriptions",
+    "get_message_push_delivery",
     {
       target_message_id: messageId,
     }
   );
 
-  if (error) {
-    throw error;
+  if (error) throw error;
+
+  if (data === null) {
+    return null;
   }
 
-  if (!Array.isArray(data)) {
+  if (
+    !data?.message ||
+    !Array.isArray(data.subscriptions)
+  ) {
     throw new Error(
-      "Invalid push subscription response"
+      "Invalid push delivery response"
     );
-  }
-
-  return data;
-}
-
-async function getSender(admin, senderId) {
-  const { data, error } = await admin
-    .from("profiles")
-    .select("display_name, username")
-    .eq("id", senderId)
-    .maybeSingle();
-
-  if (error) {
-    throw error;
   }
 
   return data;
@@ -158,7 +129,9 @@ function createNotification(message, sender) {
     sender?.username?.trim() ||
     "Someone";
 
-  return {
+  return JSON.stringify({
+    messageId: message.id,
+
     title: `${senderName} sent you a message`,
 
     body: getNotificationPreview(message),
@@ -166,7 +139,7 @@ function createNotification(message, sender) {
     url: `/messages/${message.conversation_id}`,
 
     tag: `chat:${message.conversation_id}`,
-  };
+  });
 }
 
 /* -------------------- DELIVERY -------------------- */
@@ -175,41 +148,33 @@ async function deliverNotification(
   subscription,
   notification
 ) {
+  if (!isValidPushEndpoint(subscription.endpoint)) {
+    return "failed";
+  }
+
   try {
     await sendWebPush(
       subscription,
       notification
     );
 
-    return {
-      status: "sent",
-    };
-
+    return "sent";
   } catch (error) {
-    if (
-      EXPIRED_STATUS_CODES.has(
-        error?.statusCode
-      )
-    ) {
-      return {
-        status: "expired",
-        subscriptionId: subscription.id,
-      };
-    }
-
-    throw error;
+    return EXPIRED_STATUS_CODES.has(
+      error?.statusCode
+    )
+      ? "expired"
+      : "failed";
   }
 }
 
-/* -------------------- EXPIRED SUBSCRIPTIONS -------------------- */
+/* -------------------- CLEANUP -------------------- */
 
 async function removeExpiredSubscriptions(
   admin,
   subscriptionIds
 ) {
-  if (!subscriptionIds.length) {
-    return;
-  }
+  if (!subscriptionIds.length) return;
 
   const { error } = await admin
     .from("push_subscriptions")
@@ -218,7 +183,7 @@ async function removeExpiredSubscriptions(
 
   if (error) {
     console.error(
-      "Failed to remove expired push subscriptions:",
+      "[Push] Expired subscription cleanup failed:",
       error.message
     );
   }
@@ -231,11 +196,13 @@ async function deliverNotifications(
   subscriptions,
   notification
 ) {
-  let sent = 0;
-  let failed = 0;
-  let expired = 0;
+  const counts = {
+    sent: 0,
+    failed: 0,
+    expired: 0,
+  };
 
-  const expiredSubscriptionIds = [];
+  const expiredIds = [];
 
   for (
     let offset = 0;
@@ -247,7 +214,7 @@ async function deliverNotifications(
       offset + DELIVERY_BATCH_SIZE
     );
 
-    const results = await Promise.allSettled(
+    const results = await Promise.all(
       batch.map((subscription) =>
         deliverNotification(
           subscription,
@@ -256,47 +223,32 @@ async function deliverNotifications(
       )
     );
 
-    for (const result of results) {
-      if (result.status === "rejected") {
-        failed++;
+    for (
+      let index = 0;
+      index < results.length;
+      index++
+    ) {
+      const status = results[index];
 
-        continue;
-      }
+      counts[status]++;
 
-      const delivery = result.value;
-
-      if (delivery.status === "sent") {
-        sent++;
-
-      } else if (delivery.status === "expired") {
-        expired++;
-
-        expiredSubscriptionIds.push(
-          delivery.subscriptionId
-        );
+      if (status === "expired") {
+        expiredIds.push(batch[index].id);
       }
     }
   }
 
-  /* Delete expired subscriptions in one request. */
-
   await removeExpiredSubscriptions(
     admin,
-    expiredSubscriptionIds
+    expiredIds
   );
 
-  return {
-    sent,
-    failed,
-    expired,
-  };
+  return counts;
 }
 
 /* -------------------- ROUTE -------------------- */
 
 export async function POST(request) {
-  /* Authenticate database webhook. */
-
   if (!validSecret(request)) {
     return json(
       { error: "Unauthorized" },
@@ -305,8 +257,6 @@ export async function POST(request) {
   }
 
   try {
-    /* Parse and validate webhook event. */
-
     const payload = await request
       .json()
       .catch(() => null);
@@ -329,61 +279,34 @@ export async function POST(request) {
 
     const admin = createAdminClient();
 
-    /* Retrieve authoritative message data. */
-
-    const message = await getMessage(
+    const delivery = await getPushDelivery(
       admin,
       messageId
     );
 
-    if (!message) {
+    if (!delivery) {
       return json(
         { error: "Message not found" },
         404
       );
     }
 
-    /* Retrieve eligible subscriptions.
-
-       The database function enforces:
-
-       - Conversation membership
-       - Sender exclusion
-       - Notification preferences
-       - Bidirectional private-chat blocking
-       - Group notification support
-    */
-
-    const subscriptions =
-      await getEligibleSubscriptions(
-        admin,
-        message.id
-      );
+    const {
+      message,
+      sender,
+      subscriptions,
+    } = delivery;
 
     if (!subscriptions.length) {
       return emptyDeliveryResult();
     }
-
-    /* Only retrieve sender information if
-       there are notifications to deliver. */
-
-    const sender = await getSender(
-      admin,
-      message.sender_id
-    );
 
     const notification = createNotification(
       message,
       sender
     );
 
-    /* Deliver notifications in bounded batches. */
-
-    const {
-      sent,
-      failed,
-      expired,
-    } = await deliverNotifications(
+    const counts = await deliverNotifications(
       admin,
       subscriptions,
       notification
@@ -391,18 +314,18 @@ export async function POST(request) {
 
     return json(
       {
-        success: failed === 0,
-        sent,
-        failed,
-        expired,
+        success: counts.failed === 0,
+        ...counts,
       },
-      failed ? 503 : 200
+      counts.failed ? 503 : 200
     );
-
   } catch (error) {
     console.error(
-      "Push delivery failed:",
-      error
+      "[Push] Delivery failed:",
+      {
+        message: error?.message,
+        code: error?.code,
+      }
     );
 
     return json(

@@ -1,18 +1,70 @@
 // src/lib/extras/attachments.js
 
 import { createClient } from "@/lib/supabase/client";
-import { ATTACHMENT_BUCKET, MAX_IMAGE_SIZE, SIGNED_URL_EXPIRY } from "@/constants/attachments";
-import { validateFile, normalizeFile } from "@/utils/fileUtils";
+
+import {
+  ATTACHMENT_BUCKET,
+  MAX_IMAGE_SIZE,
+  SIGNED_URL_EXPIRY,
+} from "@/constants/attachments";
+
+import {
+  validateFile,
+  normalizeFile,
+} from "@/utils/fileUtils";
 
 const supabase = createClient();
+
+const MAX_CACHE_SIZE = 300;
+
+export const ATTACHMENT_EXPIRY_BUFFER = 60_000;
 
 const urlCache = new Map();
 const pendingRequests = new Map();
 
-const MAX_CACHE_SIZE = 300;
-const EXPIRY_BUFFER = 60 * 1000;
-
 let cacheGeneration = 0;
+
+/* -------------------- HELPERS -------------------- */
+
+function getStorage() {
+  return supabase.storage.from(ATTACHMENT_BUCKET);
+}
+
+function getCacheKey(path, userId) {
+  return `${userId}:${path}`;
+}
+
+function isFresh(entry) {
+  return (
+    entry &&
+    entry.expiresAt >
+    Date.now() + ATTACHMENT_EXPIRY_BUFFER
+  );
+}
+
+function cacheEntry(key, entry) {
+  const now = Date.now();
+
+  // Remove expired entries.
+  for (const [id, cached] of urlCache) {
+    if (cached.expiresAt <= now) {
+      urlCache.delete(id);
+    }
+  }
+
+  // Move updated entries to the end.
+  urlCache.delete(key);
+  urlCache.set(key, entry);
+
+  // Evict least recently used entries.
+  while (urlCache.size > MAX_CACHE_SIZE) {
+    urlCache.delete(
+      urlCache.keys().next().value
+    );
+  }
+}
+
+/* -------------------- UPLOAD -------------------- */
 
 export async function uploadAttachment({
   conversationId,
@@ -23,26 +75,31 @@ export async function uploadAttachment({
     throw new Error("Missing attachment information");
   }
 
+  const info = validateFile(file);
+
   const {
     extension,
     mimeType,
     isImage,
-  } = validateFile(file);
+  } = info;
 
   if (isImage && file.size > MAX_IMAGE_SIZE) {
     throw new Error("Image exceeds the 5 MB limit");
   }
 
-  const normalizedFile = normalizeFile(file);
+const normalizedFile = normalizeFile(file, info);
+
   const path = `${conversationId}/${userId}/` + `${crypto.randomUUID()}.${extension}`;
 
-  const { error } = await supabase.storage
-    .from(ATTACHMENT_BUCKET)
-    .upload(path, normalizedFile, {
+  const { error } = await getStorage().upload(
+    path,
+    normalizedFile,
+    {
       contentType: mimeType,
       cacheControl: "300",
       upsert: false,
-    });
+    }
+  );
 
   if (error) throw error;
 
@@ -55,34 +112,26 @@ export async function uploadAttachment({
   };
 }
 
-function pruneCache() {
-  const now = Date.now();
-
-  for (const [key, entry] of urlCache) {
-    if (entry.expiresAt <= now) {
-      urlCache.delete(key);
-    }
-  }
-
-  while (urlCache.size >= MAX_CACHE_SIZE) {
-    const oldestKey = urlCache.keys().next().value;
-    urlCache.delete(oldestKey);
-  }
-}
+/* -------------------- SIGNED URLS -------------------- */
 
 export async function getAttachmentUrl(path, userId) {
   if (!path || !userId) {
     throw new Error("Missing attachment information");
   }
 
-  const key = `${userId}:${path}`;
+  const key = getCacheKey(path, userId);
+
   const cached = urlCache.get(key);
 
-  if (
-    cached && cached.expiresAt > Date.now() + EXPIRY_BUFFER
-  ) {
+  if (isFresh(cached)) {
+    // Mark as recently used.
+    urlCache.delete(key);
+    urlCache.set(key, cached);
+
     return cached;
   }
+
+  urlCache.delete(key);
 
   const pending = pendingRequests.get(key);
 
@@ -92,57 +141,79 @@ export async function getAttachmentUrl(path, userId) {
 
   const generation = cacheGeneration;
 
-  const request = (async () => {
-    const { data, error } = await supabase.storage
-      .from(ATTACHMENT_BUCKET)
-      .createSignedUrl(path, SIGNED_URL_EXPIRY);
+  const request = Promise.resolve()
+    .then(async () => {
+      const startedAt = Date.now();
 
-    if (error) throw error;
+      const { data, error } =
+        await getStorage().createSignedUrl(
+          path,
+          SIGNED_URL_EXPIRY
+        );
 
-    const entry = {
-      url: data.signedUrl,
-      expiresAt:
-        Date.now() + SIGNED_URL_EXPIRY * 1000,
-    };
+      if (
+        generation !== cacheGeneration ||
+        pendingRequests.get(key) !== request
+      ) {
+        throw new Error(
+          "Attachment request invalidated"
+        );
+      }
 
-    if (generation === cacheGeneration) {
-      pruneCache();
-      urlCache.set(key, entry);
-    }
+      if (error) throw error;
 
-    return entry;
-  })();
+      if (!data?.signedUrl) {
+        throw new Error(
+          "Unable to retrieve attachment URL"
+        );
+      }
+
+      const entry = {
+        url: data.signedUrl,
+        expiresAt:
+          startedAt + SIGNED_URL_EXPIRY * 1000,
+      };
+
+      cacheEntry(key, entry);
+
+      return entry;
+    })
+    .finally(() => {
+      if (pendingRequests.get(key) === request) {
+        pendingRequests.delete(key);
+      }
+    });
 
   pendingRequests.set(key, request);
 
-  try {
-    return await request;
-  } finally {
-    if (pendingRequests.get(key) === request) {
-      pendingRequests.delete(key);
-    }
-  }
+  return request;
 }
 
+/* -------------------- CACHE MANAGEMENT -------------------- */
+
 export function invalidateAttachmentUrl(path, userId) {
-  urlCache.delete(`${userId}:${path}`);
+  const key = getCacheKey(path, userId);
+
+  urlCache.delete(key);
+  pendingRequests.delete(key);
 }
 
 export function clearAttachmentCache() {
-  cacheGeneration += 1;
+  cacheGeneration++;
 
   urlCache.clear();
   pendingRequests.clear();
 }
+
+/* -------------------- DOWNLOAD -------------------- */
 
 export async function downloadAttachment(path, name) {
   if (!path) {
     throw new Error("Missing attachment path");
   }
 
-  const { data, error } = await supabase.storage
-    .from(ATTACHMENT_BUCKET)
-    .download(path);
+  const { data, error } =
+    await getStorage().download(path);
 
   if (error) throw error;
 
@@ -161,6 +232,6 @@ export async function downloadAttachment(path, name) {
 
     setTimeout(() => {
       URL.revokeObjectURL(url);
-    }, 30000);
+    }, 30_000);
   }
 }

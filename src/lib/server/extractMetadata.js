@@ -3,8 +3,11 @@
 import "server-only";
 
 import { load } from "cheerio";
-import { safeFetchHtml } from "./safeFetch";
+import { safeFetchHtml, safeFetchJson } from "./safeFetch";
 import { normalizeUrl, getUrlHostname } from "@/utils/urlUtils";
+import { isPreviewAllowed } from "@/utils/previewUrlPolicy";
+import { getYouTubeVideoId, getCanonicalYouTubeVideoUrl } from "@/utils/youtubeUtils";
+
 import {
     MAX_TITLE_LENGTH,
     MAX_DESCRIPTION_LENGTH,
@@ -14,39 +17,13 @@ import {
     MAX_JSON_LD_NODES,
     MAX_JSON_LD_DEPTH,
     MAX_IMAGE_CANDIDATES,
+    METADATA_FETCH_TIMEOUT,
+    YOUTUBE_FETCH_TIMEOUT,
+    YOUTUBE_OEMBED_ENDPOINT,
     PREVIEW_QUALITY,
 } from "@/constants/linkPreviews";
-import {
-    extractYouTubeMetadata,
-} from "./providers/youtube";
 
-import {
-    getYouTubeVideoId,
-} from "@/utils/youtubeUtils";
-
-/* -------------------- STRUCTURED DATA TYPES -------------------- */
-
-const CONTENT_TYPES = new Set([
-    "WebPage",
-    "WebSite",
-    "ProfilePage",
-    "AboutPage",
-    "Article",
-    "NewsArticle",
-    "BlogPosting",
-    "VideoObject",
-    "MusicVideoObject",
-    "MusicRecording",
-    "MusicAlbum",
-    "Product",
-    "Movie",
-    "TVSeries",
-    "Person",
-    "Organization",
-    "MusicGroup",
-    "CreativeWork",
-    "CollectionPage",
-]);
+/* -------------------- METADATA SETTINGS -------------------- */
 
 const META_KEYS = {
     title: [
@@ -75,7 +52,75 @@ const META_KEYS = {
         "thumbnail",
         "thumbnailurl",
     ],
+
+    fallbackTitle: [
+        "headline",
+        "name",
+    ],
 };
+
+const SUPPORTED_META_KEYS = new Set(Object.values(META_KEYS).flat());
+
+const HIGH_PRIORITY_TYPES = new Set([
+    "VideoObject",
+    "MusicVideoObject",
+    "Article",
+    "NewsArticle",
+    "BlogPosting",
+    "Product",
+    "MusicAlbum",
+    "MusicRecording",
+    "Movie",
+]);
+
+const MEDIUM_PRIORITY_TYPES = new Set([
+    "ProfilePage",
+    "WebPage",
+    "CollectionPage",
+]);
+
+const CONTENT_TYPES = new Set([
+    ...HIGH_PRIORITY_TYPES,
+    ...MEDIUM_PRIORITY_TYPES,
+    "WebSite",
+    "AboutPage",
+    "TVSeries",
+    "Person",
+    "Organization",
+    "MusicGroup",
+    "CreativeWork",
+]);
+
+const STRUCTURED_KEYS = [
+    "@graph",
+    "mainEntity",
+    "mainEntityOfPage",
+    "subjectOf",
+    "video",
+    "about",
+];
+
+const IMAGE_KEYS = [
+    "contentUrl",
+    "url",
+    "thumbnailUrl",
+    "@id",
+];
+
+const IMAGE_LINK_SELECTORS = [
+    'link[rel="image_src"]',
+    'link[itemprop="thumbnailUrl"]',
+    'link[itemprop="image"]',
+];
+
+const YOUTUBE_PROVIDER_HOSTS = new Set([
+    "www.youtube.com",
+]);
+
+const YOUTUBE_THUMBNAIL_HOSTS = new Set([
+    "i.ytimg.com",
+    "img.youtube.com",
+]);
 
 /* -------------------- TEXT CLEANING -------------------- */
 
@@ -90,25 +135,32 @@ function cleanText(value, maxLength) {
         .replace(/\s+/g, " ")
         .trim();
 
-    if (!cleaned) {
-        return null;
+    if (!cleaned) return null;
+
+    // Avoid allocating a character array for short strings.
+
+    if (cleaned.length <= maxLength) {
+        return cleaned;
     }
 
-    return Array.from(cleaned)
-        .slice(0, maxLength)
-        .join("");
+    let result = "";
+    let count = 0;
+
+    for (const character of cleaned) {
+        if (count >= maxLength) break;
+
+        result += character;
+        count++;
+    }
+
+    return result;
 }
 
 function firstText(values, maxLength) {
     for (const value of values) {
-        const cleaned = cleanText(
-            value,
-            maxLength
-        );
+        const text = cleanText(value, maxLength);
 
-        if (cleaned) {
-            return cleaned;
-        }
+        if (text) return text;
     }
 
     return null;
@@ -120,38 +172,41 @@ function createMetaIndex($) {
     const index = new Map();
 
     $("meta").each((_, element) => {
-        const meta = $(element);
+        const attributes = element.attribs;
 
-        const content = meta.attr("content");
+        if (!attributes) return;
+
+        const content = attributes.content;
 
         if (
-            typeof content !== "string" ||
-            !content.trim()
+            typeof content !== "string" || !content.trim()
         ) {
             return;
         }
 
-        const keys = [
-            meta.attr("property"),
-            meta.attr("name"),
-            meta.attr("itemprop"),
-        ];
+        const keys = new Set([
+            attributes.property,
+            attributes.name,
+            attributes.itemprop,
+        ]);
 
         for (const key of keys) {
             if (!key) continue;
 
-            const normalizedKey =
-                key.trim().toLowerCase();
+            const normalized = key
+                .trim()
+                .toLowerCase();
 
-            let values = index.get(normalizedKey);
+            if (!SUPPORTED_META_KEYS.has(normalized)) {
+                continue;
+            }
+
+            let values = index.get(normalized);
 
             if (!values) {
                 values = [];
-
-                index.set(normalizedKey, values);
+                index.set(normalized, values);
             }
-
-            // Prevent excessive duplicate metadata.
 
             if (values.length < 10) {
                 values.push(content);
@@ -162,23 +217,21 @@ function createMetaIndex($) {
     return index;
 }
 
-function getMetaValues(index, keys) {
-    const values = [];
-
+function* getMetaValues(index, keys) {
     for (const key of keys) {
-        const matches = index.get(
-            key.toLowerCase()
-        );
+        const values = index.get(key);
 
-        if (matches) {
-            values.push(...matches);
+        if (values) {
+            yield* values;
         }
     }
-
-    return values;
 }
 
-/* -------------------- JSON-LD HELPERS -------------------- */
+function getMetaText(index, keys, maxLength) {
+    return firstText(getMetaValues(index, keys), maxLength);
+}
+
+/* -------------------- STRUCTURED DATA -------------------- */
 
 function getSchemaTypes(value) {
     const types = Array.isArray(value)
@@ -187,23 +240,26 @@ function getSchemaTypes(value) {
 
     return types
         .filter((type) => typeof type === "string")
-        .map((type) => {
-            return type.split(/[\/#]/).pop();
-        });
+        .map((type) => type.split(/[\/#]/).pop());
 }
 
-function isContentNode(node) {
-    return getSchemaTypes(node["@type"]).some(
-        (type) => CONTENT_TYPES.has(type)
-    );
+function getNodePriority(types) {
+    if (
+        types.some((type) => HIGH_PRIORITY_TYPES.has(type))
+    ) {
+        return 3;
+    }
+
+    if (
+        types.some((type) => MEDIUM_PRIORITY_TYPES.has(type))
+    ) {
+        return 2;
+    }
+
+    return 1;
 }
 
-function collectStructuredNodes(
-    value,
-    nodes,
-    budget,
-    depth = 0
-) {
+function collectStructuredNodes(value, nodes, budget,depth = 0) {
     if (
         !value ||
         typeof value !== "object" ||
@@ -219,48 +275,34 @@ function collectStructuredNodes(
         for (const item of value) {
             if (budget.remaining <= 0) break;
 
-            collectStructuredNodes(
-                item,
-                nodes,
-                budget,
-                depth + 1
-            );
+            collectStructuredNodes(item, nodes, budget, depth + 1);
         }
 
         return;
     }
 
-    if (isContentNode(value)) {
-        nodes.push(value);
+    const types = getSchemaTypes(value["@type"]);
+
+    if (
+        types.some((type) => CONTENT_TYPES.has(type))
+    ) {
+        nodes.push({
+            node: value,
+            types,
+            priority: getNodePriority(types),
+        });
     }
 
-    const nestedKeys = [
-        "@graph",
-        "mainEntity",
-        "mainEntityOfPage",
-        "subjectOf",
-        "video",
-        "about",
-    ];
-
-    for (const key of nestedKeys) {
+    for (const key of STRUCTURED_KEYS) {
         if (budget.remaining <= 0) break;
 
-        collectStructuredNodes(
-            value[key],
-            nodes,
-            budget,
-            depth + 1
-        );
+        collectStructuredNodes(value[key], nodes, budget, depth + 1);
     }
 }
 
 function extractStructuredNodes($) {
     const nodes = [];
-
-    const budget = {
-        remaining: MAX_JSON_LD_NODES,
-    };
+    const budget = { remaining: MAX_JSON_LD_NODES };
 
     $('script[type="application/ld+json"]')
         .slice(0, MAX_JSON_LD_SCRIPTS)
@@ -279,133 +321,64 @@ function extractStructuredNodes($) {
             }
 
             try {
-                const parsed = JSON.parse(text);
-
-                collectStructuredNodes(
-                    parsed,
-                    nodes,
-                    budget
-                );
+                collectStructuredNodes(JSON.parse(text), nodes, budget);
             } catch {
-                // Invalid JSON-LD should not prevent
-                // normal metadata extraction.
+                // Ignore malformed structured data.
             }
         });
 
-    return nodes;
+    return nodes.sort((a, b) => b.priority - a.priority);
 }
 
-/* -------------------- STRUCTURED DATA PRIORITY -------------------- */
+function getStructuredText(nodes, keys, maxLength) {
+    for (const { node } of nodes) {
+        for (const key of keys) {
+            const text = cleanText(node[key], maxLength);
 
-function getNodePriority(node) {
-    const types = getSchemaTypes(node["@type"]);
-
-    if (
-        types.some((type) =>
-            [
-                "VideoObject",
-                "MusicVideoObject",
-                "Article",
-                "NewsArticle",
-                "BlogPosting",
-                "Product",
-                "MusicAlbum",
-                "MusicRecording",
-                "Movie",
-            ].includes(type)
-        )
-    ) {
-        return 3;
-    }
-
-    if (
-        types.some((type) =>
-            [
-                "ProfilePage",
-                "WebPage",
-                "CollectionPage",
-            ].includes(type)
-        )
-    ) {
-        return 2;
-    }
-
-    return 1;
-}
-
-function getStructuredText(
-    nodes,
-    keys,
-    maxLength
-) {
-    for (const node of nodes) {
-        const values = keys.map(
-            (key) => node[key]
-        );
-
-        const text = firstText(
-            values,
-            maxLength
-        );
-
-        if (text) return text;
+            if (text) return text;
+        }
     }
 
     return null;
 }
 
 function getStructuredSiteName(nodes) {
-    for (const node of nodes) {
+    for (const { node, types } of nodes) {
         const name = firstText(
             [
                 node.publisher?.name,
                 node.isPartOf?.name,
+                types.includes("WebSite")
+                    ? node.name
+                    : null,
             ],
             MAX_SITE_NAME_LENGTH
         );
 
-        if (name) {
-            return name;
-        }
-
-        if (
-            getSchemaTypes(node["@type"])
-                .includes("WebSite")
-        ) {
-            const websiteName = cleanText(
-                node.name,
-                MAX_SITE_NAME_LENGTH
-            );
-
-            if (websiteName) {
-                return websiteName;
-            }
-        }
+        if (name) return name;
     }
 
     return null;
 }
 
-/* -------------------- IMAGE URL EXTRACTION -------------------- */
+/* -------------------- IMAGE URL VALIDATION -------------------- */
 
 function resolveImageUrl(value, baseUrl) {
-    if (typeof value !== "string") {
-        return null;
-    }
-
-    const input = value.trim();
-
-    if (!input) {
+    if (
+        typeof value !== "string" || !value.trim()
+    ) {
         return null;
     }
 
     try {
-        const url = new URL(input, baseUrl);
+        const url = new URL(value.trim(), baseUrl);
 
         if (
             url.protocol !== "https:" ||
+            url.port ||
             url.username ||
-            url.password
+            url.password ||
+            !isPreviewAllowed(url.href)
         ) {
             return null;
         }
@@ -416,131 +389,71 @@ function resolveImageUrl(value, baseUrl) {
     }
 }
 
-function collectImageCandidates(
-    value,
-    candidates,
-    depth = 0
-) {
-    if (
-        !value ||
-        depth > 4 ||
-        candidates.length >= MAX_IMAGE_CANDIDATES
-    ) {
+/* -------------------- IMAGE CANDIDATES -------------------- */
+
+function* walkImageCandidates(value, depth = 0) {
+    if (!value || depth > 4) {
         return;
     }
 
     if (typeof value === "string") {
-        candidates.push(value);
-
+        yield value;
         return;
     }
 
     if (Array.isArray(value)) {
         for (const item of value) {
-            if (
-                candidates.length >=
-                MAX_IMAGE_CANDIDATES
-            ) {
-                break;
-            }
-
-            collectImageCandidates(
-                item,
-                candidates,
-                depth + 1
-            );
+            yield* walkImageCandidates(item, depth + 1);
         }
 
         return;
     }
 
     if (typeof value === "object") {
-        const keys = [
-            "contentUrl",
-            "url",
-            "thumbnailUrl",
-            "@id",
-        ];
-
-        for (const key of keys) {
-            collectImageCandidates(
-                value[key],
-                candidates,
-                depth + 1
-            );
+        for (const key of IMAGE_KEYS) {
+            yield* walkImageCandidates(value[key], depth + 1);
         }
     }
 }
 
-function getImageUrl(
-    $,
-    metaIndex,
-    structuredNodes,
-    finalUrl
-) {
-    const candidates = [];
+function* getImageCandidates($, metaIndex, getStructuredNodes) {
+    yield* getMetaValues(metaIndex, META_KEYS.image);
 
-    collectImageCandidates(
-        getMetaValues(
-            metaIndex,
-            META_KEYS.image
-        ),
-        candidates
-    );
-
-    for (const node of structuredNodes) {
-        collectImageCandidates(
-            node.thumbnailUrl,
-            candidates
-        );
-
-        collectImageCandidates(
-            node.image,
-            candidates
-        );
-
-        if (
-            candidates.length >=
-            MAX_IMAGE_CANDIDATES
-        ) {
-            break;
-        }
+    for (const { node } of getStructuredNodes()) {
+        yield* walkImageCandidates(node.thumbnailUrl);
+        yield* walkImageCandidates(node.image);
     }
 
-    collectImageCandidates(
-        [
-            $('link[rel="image_src"]')
-                .first()
-                .attr("href"),
+    for (const selector of IMAGE_LINK_SELECTORS) {
+        const href = $(selector)
+            .first()
+            .attr("href");
 
-            $('link[itemprop="thumbnailUrl"]')
-                .first()
-                .attr("href"),
+        if (href) yield href;
+    }
+}
 
-            $('link[itemprop="image"]')
-                .first()
-                .attr("href"),
-        ],
-        candidates
-    );
-
+function getImageUrl($, metaIndex, getStructuredNodes, finalUrl) {
     const seen = new Set();
 
-    for (const candidate of candidates) {
+    let count = 0;
+
+    for (const candidate of getImageCandidates($, metaIndex, getStructuredNodes)) {
+        if (count >= MAX_IMAGE_CANDIDATES) {
+            break;
+        }
+
+        count++;
+
         if (seen.has(candidate)) {
             continue;
         }
 
         seen.add(candidate);
 
-        const url = resolveImageUrl(
-            candidate,
-            finalUrl
-        );
+        const url = resolveImageUrl(candidate, finalUrl);
 
-        if (url) {
-            return url;
-        }
+        if (url) return url;
     }
 
     return null;
@@ -561,193 +474,192 @@ export function getMetadataQuality(metadata) {
         return PREVIEW_QUALITY.FAILED;
     }
 
-    const hostname = normalizeComparison(
-        getUrlHostname(
-            metadata.final_url ||
-            metadata.url ||
-            ""
-        )
-    );
-
-    const title = normalizeComparison(
-        metadata.title
-    );
-
-    const hasTitle = Boolean(
-        title && title !== hostname
-    );
-
-    const hasDescription = Boolean(
-        metadata.description?.trim()
-    );
-
-    const hasImage = Boolean(
-        metadata.image_url
-    );
-
-    const isYouTubeVideo = Boolean(
-        getYouTubeVideoId(
-            metadata.final_url ||
-            metadata.url ||
-            ""
-        )
-    );
+    const url = metadata.final_url || metadata.url || "";
+    const hostname = normalizeComparison(getUrlHostname(url));
+    const title = normalizeComparison(metadata.title);
+    const hasTitle = Boolean(title && title !== hostname);
+    const hasDescription = Boolean(metadata.description?.trim());
+    const hasImage = Boolean(metadata.image_url);
 
     if (
-        isYouTubeVideo &&
-        hasTitle &&
-        hasImage
+        hasTitle && hasImage &&
+        (hasDescription || getYouTubeVideoId(url))
     ) {
         return PREVIEW_QUALITY.COMPLETE;
     }
 
-    if (
-        hasTitle &&
-        hasDescription &&
-        hasImage
-    ) {
-        return PREVIEW_QUALITY.COMPLETE;
-    }
-
-    if (
+    return (
         hasTitle ||
         hasDescription ||
         hasImage
-    ) {
-        return PREVIEW_QUALITY.PARTIAL;
-    }
-
-    return PREVIEW_QUALITY.BASIC;
+    )
+        ? PREVIEW_QUALITY.PARTIAL
+        : PREVIEW_QUALITY.BASIC;
 }
 
-/* -------------------- HTML EXTRACTION -------------------- */
+/* -------------------- HTML METADATA -------------------- */
 
 export function parseMetadata(html, finalUrl) {
     const $ = load(html);
 
     const hostname = getUrlHostname(finalUrl);
-
     const metaIndex = createMetaIndex($);
 
-    const structuredNodes =
-        extractStructuredNodes($).sort(
-            (a, b) =>
-                getNodePriority(b) -
-                getNodePriority(a)
+    let structuredNodes;
+
+    // Parse JSON-LD only when a fallback requires it.
+
+    function getStructuredNodes() {
+        return (
+            structuredNodes ??= extractStructuredNodes($)
         );
+    }
 
-    const title = firstText(
-        [
-            ...getMetaValues(
-                metaIndex,
-                META_KEYS.title
-            ),
+    const title =
+        getMetaText(metaIndex, META_KEYS.title, MAX_TITLE_LENGTH) ||
+        getStructuredText(getStructuredNodes(), ["headline", "name"], MAX_TITLE_LENGTH) ||
+        cleanText($("title").first().text(), MAX_TITLE_LENGTH) ||
+        getMetaText(metaIndex, META_KEYS.fallbackTitle, MAX_TITLE_LENGTH) ||
+        hostname;
 
-            getStructuredText(
-                structuredNodes,
-                ["headline", "name"],
-                MAX_TITLE_LENGTH
-            ),
+    const description =
+        getMetaText(etaIndex, META_KEYS.description, MAX_DESCRIPTION_LENGTH) ||
+        getStructuredText(getStructuredNodes(), ["description"], MAX_DESCRIPTION_LENGTH);
 
-            $("title").first().text(),
+    const siteName =
+        getMetaText(metaIndex,  META_KEYS.siteName, MAX_SITE_NAME_LENGTH) ||
+        getStructuredSiteName(getStructuredNodes()) ||
+        cleanText(hostname, MAX_SITE_NAME_LENGTH);
 
-            ...getMetaValues(
-                metaIndex,
-                ["headline", "name"]
-            ),
-        ],
-        MAX_TITLE_LENGTH
-    );
-
-    const description = firstText(
-        [
-            ...getMetaValues(
-                metaIndex,
-                META_KEYS.description
-            ),
-
-            getStructuredText(
-                structuredNodes,
-                ["description"],
-                MAX_DESCRIPTION_LENGTH
-            ),
-        ],
-        MAX_DESCRIPTION_LENGTH
-    );
-
-    const siteName = firstText(
-        [
-            ...getMetaValues(
-                metaIndex,
-                META_KEYS.siteName
-            ),
-
-            getStructuredSiteName(
-                structuredNodes
-            ),
-
-            hostname,
-        ],
-        MAX_SITE_NAME_LENGTH
-    );
-
-    const imageUrl = getImageUrl(
-        $,
-        metaIndex,
-        structuredNodes,
-        finalUrl
-    );
+    const imageUrl = getImageUrl($, metaIndex, getStructuredNodes, finalUrl);
 
     return {
         final_url: finalUrl,
-
-        title: title || hostname,
-
+        title,
         description,
-
         image_url: imageUrl,
-
         site_name: siteName,
     };
 }
 
-/* -------------------- FETCH AND EXTRACT -------------------- */
+/* -------------------- YOUTUBE METADATA -------------------- */
+
+function resolveYouTubeThumbnail(value) {
+    if (typeof value !== "string") {
+        return null;
+    }
+
+    try {
+        const url = new URL(value);
+
+        if (
+            url.protocol !== "https:" ||
+            url.port ||
+            url.username ||
+            url.password ||
+            !YOUTUBE_THUMBNAIL_HOSTS.has(url.hostname) ||
+            !isPreviewAllowed(url.href)
+        ) {
+            return null;
+        }
+
+        return normalizeUrl(url.href);
+    } catch {
+        return null;
+    }
+}
+
+export function parseYouTubeMetadata(data, canonicalUrl) {
+    if (
+        !data || typeof data !== "object" || data.type !== "video"
+    ) {
+        return null;
+    }
+
+    const title = cleanText(data.title, MAX_TITLE_LENGTH);
+
+    if (!title) {
+        return null;
+    }
+
+    return {
+        final_url: canonicalUrl,
+        title,
+        description: null,
+        image_url: resolveYouTubeThumbnail(data.thumbnail_url),
+        site_name: cleanText(data.provider_name, MAX_SITE_NAME_LENGTH) || "YouTube",
+    };
+}
+
+export async function extractYouTubeMetadata(value, { timeoutMs = YOUTUBE_FETCH_TIMEOUT } = {}) {
+    if (!isPreviewAllowed(value)) {
+        return null;
+    }
+
+    const canonicalUrl = getCanonicalYouTubeVideoUrl(value);
+
+    if (!canonicalUrl) {
+        return null;
+    }
+
+    const endpoint = new URL(YOUTUBE_OEMBED_ENDPOINT);
+
+    endpoint.searchParams.set("url", canonicalUrl);
+    endpoint.searchParams.set("format", "json");
+
+    const { data } = await safeFetchJson(
+        endpoint.href,
+        {
+            timeoutMs: Math.min(timeoutMs, YOUTUBE_FETCH_TIMEOUT),
+            allowedHostnames: YOUTUBE_PROVIDER_HOSTS,
+            maxRedirects: 0,
+        }
+    );
+
+    return parseYouTubeMetadata(data, canonicalUrl);
+}
 
 /* -------------------- FETCH AND EXTRACT -------------------- */
 
 export async function extractMetadata(value) {
-    const videoId = getYouTubeVideoId(value);
+  if (!isPreviewAllowed(value)) {
+    throw new Error("Sensitive preview URL blocked");
+  }
 
-    if (videoId) {
-        try {
-            const metadata =
-                await extractYouTubeMetadata(value);
+  const deadline = performance.now() + METADATA_FETCH_TIMEOUT;
 
-            if (metadata) {
-                return metadata;
-            }
-        } catch (error) {
-            if (process.env.NODE_ENV === "development") {
-                console.warn(
-                    "[LinkPreview] YouTube provider failed",
-                    {
-                        name: error.name,
-                        code:
-                            error.cause?.code ??
-                            error.code,
-                    }
-                );
-            }
+  function remainingTime() {
+    const remaining = deadline - performance.now();
 
-            // Continue with standard HTML extraction.
-        }
+    if (remaining <= 0) {
+      throw new Error("Metadata extraction timed out");
     }
 
-    const { html, finalUrl } =
-        await safeFetchHtml(value);
+    return remaining;
+  }
 
-    return parseMetadata(
-        html,
-        finalUrl
-    );
+  if (getYouTubeVideoId(value)) {
+    try {
+      const metadata = await extractYouTubeMetadata(value, { timeoutMs: remainingTime() });
+
+      if (metadata) {
+        return metadata;
+      }
+    } catch (error) {
+      if (process.env.NODE_ENV === "development") {
+        console.warn("[LinkPreview] YouTube provider failed",
+          {
+            name: error?.name,
+            code: error?.cause?.code ?? error?.code,
+          }
+        );
+      }
+
+      // Continue with standard HTML extraction.
+    }
+  }
+
+  const { html, finalUrl } = await safeFetchHtml(value, { timeoutMs: remainingTime() });
+
+  return parseMetadata(html, finalUrl);
 }

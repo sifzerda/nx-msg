@@ -18,94 +18,63 @@ import {
   MAX_METADATA_CACHE_ENTRIES,
   MAX_PENDING_REQUESTS,
   PREVIEW_QUALITY,
+  PREVIEW_RATE_LIMIT,
+  PREVIEW_RATE_WINDOW,
 } from "@/constants/linkPreviews";
 
-/* -------------------- CONSTANTS -------------------- */
+const CACHE_COLUMNS =
+  "url,final_url,title,description,image_url,site_name,status,fetched_at,expires_at";
 
-const CACHE_COLUMNS = [
-  "url",
-  "final_url",
-  "title",
-  "description",
-  "image_url",
-  "site_name",
-  "status",
-  "fetched_at",
-  "expires_at",
-].join(",");
+const MAX_PENDING_LOOKUPS =
+  MAX_PENDING_REQUESTS * 3;
 
 const QUALITY_TTL = Object.freeze({
-  [PREVIEW_QUALITY.COMPLETE]:
-    SUCCESS_CACHE_TTL,
-
-  [PREVIEW_QUALITY.PARTIAL]:
-    PARTIAL_CACHE_TTL,
-
-  [PREVIEW_QUALITY.BASIC]:
-    BASIC_CACHE_TTL,
-
-  [PREVIEW_QUALITY.FAILED]:
-    FAILED_CACHE_TTL,
+  [PREVIEW_QUALITY.COMPLETE]: SUCCESS_CACHE_TTL,
+  [PREVIEW_QUALITY.PARTIAL]: PARTIAL_CACHE_TTL,
+  [PREVIEW_QUALITY.BASIC]: BASIC_CACHE_TTL,
+  [PREVIEW_QUALITY.FAILED]: FAILED_CACHE_TTL,
 });
 
-/* -------------------- MEMORY STATE -------------------- */
-
 const memoryCache = new Map();
-
 const pendingRequests = new Map();
-
 const pendingCacheLookups = new Map();
+
+let cacheGeneration = 0;
 
 /* -------------------- ERRORS -------------------- */
 
 export class PreviewBusyError extends Error {
   constructor() {
     super("Link preview service is busy");
-
     this.name = "PreviewBusyError";
   }
 }
 
-/* -------------------- MEMORY CACHE -------------------- */
+/* -------------------- URL VALIDATION -------------------- */
 
-function pruneMemoryCache() {
-  const now = Date.now();
+function requireUrl(value) {
+  const url = normalizeUrl(value);
 
-  for (const [key, entry] of memoryCache) {
-    if (entry.expiresAt <= now) {
-      memoryCache.delete(key);
-    }
+  if (!url) {
+    throw new Error("Invalid preview URL");
   }
 
-  while (
-    memoryCache.size >
-    MAX_METADATA_CACHE_ENTRIES
-  ) {
-    const oldestKey =
-      memoryCache.keys().next().value;
-
-    if (oldestKey === undefined) {
-      break;
-    }
-
-    memoryCache.delete(oldestKey);
-  }
+  return url;
 }
+
+/* -------------------- MEMORY CACHE -------------------- */
 
 function getMemoryPreview(url) {
   const entry = memoryCache.get(url);
 
-  if (!entry) {
-    return undefined;
-  }
+  if (!entry) return undefined;
 
   if (entry.expiresAt <= Date.now()) {
     memoryCache.delete(url);
-
     return undefined;
   }
 
-  // Refresh LRU order.
+  // Refresh LRU position.
 
   memoryCache.delete(url);
   memoryCache.set(url, entry);
@@ -113,16 +82,22 @@ function getMemoryPreview(url) {
   return entry.preview;
 }
 
-function setMemoryPreview(url, preview) {
-  if (!preview) {
+function setMemoryPreview(
+  url,
+  preview,
+  generation
+) {
+  if (
+    !preview ||
+    generation !== cacheGeneration
+  ) {
     return;
   }
 
   const now = Date.now();
 
-  const persistentExpiry = Date.parse(
-    preview.expires_at
-  );
+  const persistentExpiry =
+    Date.parse(preview.expires_at);
 
   if (
     !Number.isFinite(persistentExpiry) ||
@@ -131,24 +106,65 @@ function setMemoryPreview(url, preview) {
     return;
   }
 
-  const expiresAt = Math.min(
-    persistentExpiry,
-    now + METADATA_MEMORY_CACHE_TTL
-  );
-
   memoryCache.delete(url);
 
   memoryCache.set(url, {
     preview,
-    expiresAt,
+
+    expiresAt: Math.min(
+      persistentExpiry,
+      now + METADATA_MEMORY_CACHE_TTL
+    ),
   });
 
-  pruneMemoryCache();
+  while (
+    memoryCache.size >
+    MAX_METADATA_CACHE_ENTRIES
+  ) {
+    memoryCache.delete(
+      memoryCache.keys().next().value
+    );
+  }
 }
 
-/* -------------------- DATABASE LOOKUP -------------------- */
+/* -------------------- REQUEST DEDUPLICATION -------------------- */
 
-async function getDatabasePreview(admin, url) {
+function runSharedRequest(
+  requests,
+  key,
+  limit,
+  operation
+) {
+  const existing = requests.get(key);
+
+  if (existing) return existing;
+
+  if (requests.size >= limit) {
+    return Promise.reject(
+      new PreviewBusyError()
+    );
+  }
+
+  const request = Promise.resolve()
+    .then(operation)
+    .finally(() => {
+      if (requests.get(key) === request) {
+        requests.delete(key);
+      }
+    });
+
+  requests.set(key, request);
+
+  return request;
+}
+
+/* -------------------- DATABASE CACHE -------------------- */
+
+async function getDatabasePreview(
+  admin,
+  url,
+  generation
+) {
   const { data, error } = await admin
     .from("link_previews")
     .select(CACHE_COLUMNS)
@@ -161,72 +177,60 @@ async function getDatabasePreview(admin, url) {
 
   if (error) {
     throw new Error(
-      "Unable to retrieve cached link preview"
+      "Unable to retrieve cached link preview",
+      { cause: error }
     );
   }
 
   if (data) {
-    setMemoryPreview(url, data);
+    setMemoryPreview(
+      url,
+      data,
+      generation
+    );
   }
 
   return data ?? null;
 }
 
-/* -------------------- PUBLIC CACHE LOOKUP -------------------- */
+function lookupPreview(admin, url) {
+  const cached = getMemoryPreview(url);
+
+  if (cached !== undefined) {
+    return Promise.resolve(cached);
+  }
+
+  const generation = cacheGeneration;
+
+  return runSharedRequest(
+    pendingCacheLookups,
+    url,
+    MAX_PENDING_LOOKUPS,
+    () => getDatabasePreview(
+      admin,
+      url,
+      generation
+    )
+  );
+}
 
 export async function getCachedPreview(
   admin,
   value
 ) {
-  const url = normalizeUrl(value);
-
-  if (!url) {
-    throw new Error("Invalid preview URL");
-  }
-
-  const memoryPreview =
-    getMemoryPreview(url);
-
-  if (memoryPreview !== undefined) {
-    return memoryPreview;
-  }
-
-  const existingLookup =
-    pendingCacheLookups.get(url);
-
-  if (existingLookup) {
-    return existingLookup;
-  }
-
-  // Bound the number of simultaneous database
-  // cache lookups tracked in memory.
-
-  if (
-    pendingCacheLookups.size >=
-    MAX_PENDING_REQUESTS * 3
-  ) {
-    throw new PreviewBusyError();
-  }
-
-  const lookup = getDatabasePreview(
+  return lookupPreview(
     admin,
-    url
-  ).finally(() => {
-    if (
-      pendingCacheLookups.get(url) === lookup
-    ) {
-      pendingCacheLookups.delete(url);
-    }
-  });
-
-  pendingCacheLookups.set(url, lookup);
-
-  return lookup;
+    requireUrl(value)
+  );
 }
 
 /* -------------------- CACHE WRITE -------------------- */
 
-async function savePreview(admin, preview) {
+async function savePreview(
+  admin,
+  preview,
+  generation
+) {
   const { error } = await admin
     .from("link_previews")
     .upsert(preview, {
@@ -235,13 +239,15 @@ async function savePreview(admin, preview) {
 
   if (error) {
     throw new Error(
-      "Unable to cache link preview"
+      "Unable to cache link preview",
+      { cause: error }
     );
   }
 
   setMemoryPreview(
     preview.url,
-    preview
+    preview,
+    generation
   );
 
   return preview;
@@ -293,36 +299,30 @@ function createCacheRecord(
   };
 }
 
-/* -------------------- FETCH AND CACHE -------------------- */
+/* -------------------- GENERATION -------------------- */
 
 async function fetchAndCachePreview(
   admin,
   url,
-  cacheChecked
+  cacheChecked,
+  generation
 ) {
   if (!cacheChecked) {
-    const cached = await getCachedPreview(
+    const cached = await lookupPreview(
       admin,
       url
     );
 
-    if (cached) {
-      return cached;
-    }
+    if (cached) return cached;
   }
 
-  // Another request may have populated the
-  // memory cache since the initial lookup.
+  const cached = getMemoryPreview(url);
 
-  const memoryPreview =
-    getMemoryPreview(url);
-
-  if (memoryPreview !== undefined) {
-    return memoryPreview;
+  if (cached !== undefined) {
+    return cached;
   }
 
   let metadata = null;
-
   let status = "success";
 
   try {
@@ -337,82 +337,77 @@ async function fetchAndCachePreview(
         "[LinkPreview] Extraction failed",
         {
           hostname: new URL(url).hostname,
-          name: error.name,
+          name: error?.name,
           code:
-            error.cause?.code ??
-            error.code,
+            error?.cause?.code ??
+            error?.code,
         }
       );
     }
   }
 
-  const preview = createCacheRecord(
-    url,
-    metadata,
-    status
-  );
-
   return savePreview(
     admin,
-    preview
+    createCacheRecord(
+      url,
+      metadata,
+      status
+    ),
+    generation
   );
 }
 
-/* -------------------- REQUEST DEDUPLICATION -------------------- */
-
-export function generateLinkPreview(
+export async function generateLinkPreview(
   admin,
   value,
-  {
-    cacheChecked = false,
-  } = {}
+  { cacheChecked = false } = {}
 ) {
-  const url = normalizeUrl(value);
+  const url = requireUrl(value);
 
-  if (!url) {
-    return Promise.reject(
-      new Error("Invalid preview URL")
-    );
+  const cached = getMemoryPreview(url);
+
+  if (cached !== undefined) {
+    return cached;
   }
 
-  const memoryPreview =
-    getMemoryPreview(url);
+  const generation = cacheGeneration;
 
-  if (memoryPreview !== undefined) {
-    return Promise.resolve(memoryPreview);
-  }
-
-  const existingRequest =
-    pendingRequests.get(url);
-
-  if (existingRequest) {
-    return existingRequest;
-  }
-
-  if (
-    pendingRequests.size >=
-    MAX_PENDING_REQUESTS
-  ) {
-    return Promise.reject(
-      new PreviewBusyError()
-    );
-  }
-
-  const request = fetchAndCachePreview(
-    admin,
+  return runSharedRequest(
+    pendingRequests,
     url,
-    cacheChecked
-  ).finally(() => {
-    if (
-      pendingRequests.get(url) === request
-    ) {
-      pendingRequests.delete(url);
+    MAX_PENDING_REQUESTS,
+    () => fetchAndCachePreview(
+      admin,
+      url,
+      cacheChecked,
+      generation
+    )
+  );
+}
+
+/* -------------------- RATE LIMITING -------------------- */
+
+export async function consumePreviewQuota(
+  admin,
+  userId
+) {
+  const { data, error } = await admin.rpc(
+    "consume_link_preview_quota",
+    {
+      target_user_id: userId,
+      max_requests: PREVIEW_RATE_LIMIT,
+      window_seconds: PREVIEW_RATE_WINDOW,
     }
-  });
+  );
 
-  pendingRequests.set(url, request);
+  if (error) {
+    throw new Error(
+      "Unable to verify link preview quota",
+      { cause: error }
+    );
+  }
 
-  return request;
+  return data === true;
 }
 
 /* -------------------- CACHE MANAGEMENT -------------------- */
@@ -420,26 +415,23 @@ export function generateLinkPreview(
 export function invalidateMemoryPreview(value) {
   const url = normalizeUrl(value);
 
-  if (url) {
-    memoryCache.delete(url);
-  }
+  if (!url) return;
+
+  cacheGeneration++;
+
+  memoryCache.delete(url);
 }
 
 export function clearPreviewMemoryCache() {
+  cacheGeneration++;
+
   memoryCache.clear();
 }
 
-/* -------------------- PUBLIC RESPONSE -------------------- */
+/* -------------------- SERIALIZATION -------------------- */
 
 export function serializePreview(preview) {
-  if (!preview) {
-    return null;
-  }
-
-  const quality =
-    preview.status === "failed"
-      ? PREVIEW_QUALITY.FAILED
-      : getMetadataQuality(preview);
+  if (!preview) return null;
 
   return {
     url: preview.url,
@@ -456,7 +448,10 @@ export function serializePreview(preview) {
 
     status: preview.status,
 
-    quality,
+    quality:
+      preview.status === "failed"
+        ? PREVIEW_QUALITY.FAILED
+        : getMetadataQuality(preview),
 
     expiresAt: preview.expires_at,
   };

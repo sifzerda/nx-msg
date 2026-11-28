@@ -1,17 +1,98 @@
 // src/app/api/push/subscribe/route.js
 
 import { NextResponse } from "next/server";
+
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { isValidPushEndpoint } from "@/lib/webPush";
 
 export const runtime = "nodejs";
 
-function fail(message, status) {
-  return NextResponse.json({ error: message }, { status });
+const KEY_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+const RESULT_ERRORS = {
+  profile_not_found: {
+    message: "Profile not found",
+    status: 404,
+  },
+
+  notifications_disabled: {
+    message: "Notifications are disabled",
+    status: 403,
+  },
+
+  endpoint_conflict: {
+    message:
+      "This push subscription belongs to another account",
+    status: 409,
+  },
+};
+
+function json(body, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+function fail(error, status) {
+  return json({ error }, status);
+}
+
+function isValidKey(value) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 256 &&
+    KEY_PATTERN.test(value)
+  );
 }
 
 export async function POST(request) {
   try {
+    /* Reject cross-origin requests before authentication. */
+
+    if (
+      request.headers.get("origin") !==
+      new URL(request.url).origin
+    ) {
+      return fail("Invalid origin", 403);
+    }
+
+    const body = await request
+      .json()
+      .catch(() => null);
+
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body)
+    ) {
+      return fail("Invalid JSON body", 400);
+    }
+
+    const subscription =
+      body.subscription ?? body;
+
+    const endpoint = subscription?.endpoint;
+    const p256dh = subscription?.keys?.p256dh;
+    const auth = subscription?.keys?.auth;
+
+    if (!isValidPushEndpoint(endpoint)) {
+      return fail(
+        "Invalid or unsupported push endpoint",
+        400
+      );
+    }
+
+    if (!isValidKey(p256dh) || !isValidKey(auth)) {
+      return fail("Invalid subscription keys", 400);
+    }
+
+    /* Authenticate the current account. */
+
     const supabase = await createClient();
 
     const {
@@ -23,126 +104,52 @@ export async function POST(request) {
       return fail("Unauthorized", 401);
     }
 
-    if (
-      request.headers.get("origin") !==
-      new URL(request.url).origin
-    ) {
-      return fail("Invalid origin", 403);
-    }
-
-    const body = await request.json();
-
-    const subscription = body.subscription ?? body;
-    const rememberPreference =
-      body.rememberPreference === true;
-
-    const endpoint = subscription?.endpoint;
-    const p256dh = subscription?.keys?.p256dh;
-    const auth = subscription?.keys?.auth;
-
-    if (
-      typeof endpoint !== "string" ||
-      !endpoint ||
-      endpoint.length > 4096 ||
-      typeof p256dh !== "string" ||
-      !p256dh ||
-      p256dh.length > 256 ||
-      typeof auth !== "string" ||
-      !auth ||
-      auth.length > 256
-    ) {
-      return fail("Invalid subscription", 400);
-    }
-
-    let url;
-
-    try {
-      url = new URL(endpoint);
-    } catch {
-      return fail("Invalid endpoint", 400);
-    }
-
-    if (
-      url.protocol !== "https:" ||
-      url.username ||
-      url.password ||
-      url.port
-    ) {
-      return fail("Invalid endpoint", 400);
-    }
+    /* Execute registration in one database transaction. */
 
     const admin = createAdminClient();
 
-    // Automatic restoration is only allowed if
-    // the user previously enabled notifications.
-    if (!rememberPreference) {
-      const { data: profile, error } = await admin
-        .from("profiles")
-        .select("notifications_enabled")
-        .eq("id", user.id)
-        .single();
+    const { data, error } = await admin.rpc(
+      "register_push_subscription",
+      {
+        target_user_id: user.id,
 
-      if (error) throw error;
+        subscription_endpoint: endpoint,
 
-      if (!profile.notifications_enabled) {
-        return fail("Notifications are disabled", 403);
+        subscription_p256dh: p256dh,
+
+        subscription_auth_key: auth,
+
+        remember_preference:
+          body.rememberPreference === true,
       }
+    );
+
+    if (error) throw error;
+
+    if (data === "success") {
+      return json({ success: true });
     }
 
-    // Never silently transfer another user's
-    // push endpoint to the current account.
-    const { data: existing, error: lookupError } =
-      await admin
-        .from("push_subscriptions")
-        .select("user_id")
-        .eq("endpoint", endpoint)
-        .maybeSingle();
+    const failure = RESULT_ERRORS[data];
 
-    if (lookupError) throw lookupError;
-
-    if (existing && existing.user_id !== user.id) {
+    if (failure) {
       return fail(
-        "This push subscription belongs to another account",
-        409
+        failure.message,
+        failure.status
       );
     }
 
-    const { error: subscriptionError } = await admin
-      .from("push_subscriptions")
-      .upsert(
-        {
-          user_id: user.id,
-          endpoint,
-          p256dh,
-          auth_key: auth,
-        },
-        { onConflict: "endpoint" }
-      );
-
-    if (subscriptionError) throw subscriptionError;
-
-    if (rememberPreference) {
-      const { error: preferenceError } = await admin
-        .from("profiles")
-        .update({ notifications_enabled: true })
-        .eq("id", user.id);
-
-      if (preferenceError) throw preferenceError;
-    }
-
-    return NextResponse.json({ success: true });
+    throw new Error(
+      "Unexpected subscription result"
+    );
   } catch (error) {
     console.error("[Push] Subscription failed:", {
       message: error?.message,
       code: error?.code,
-      details: error?.details,
-      hint: error?.hint,
     });
 
     return fail(
-      process.env.NODE_ENV === "development"
-        ? error?.message || "Could not save subscription"
-        : "Could not save subscription",
+      "Could not save subscription",
       500
     );
   }

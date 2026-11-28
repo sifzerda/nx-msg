@@ -2,13 +2,9 @@
 
 /* -------------------- STORAGE -------------------- */
 
-export const APPEARANCE_STORAGE_KEY =
-  "messenger-appearance";
-
+export const APPEARANCE_STORAGE_KEY = "messenger-appearance";
 export const APPEARANCE_STORAGE_VERSION = 1;
-
-export const SYSTEM_THEME_QUERY =
-  "(prefers-color-scheme: dark)";
+export const SYSTEM_THEME_QUERY = "(prefers-color-scheme: dark)";
 
 /* -------------------- THEME FACTORY -------------------- */
 
@@ -29,12 +25,7 @@ const COLOR_KEYS = [
   "scrollbar-hover",
 ];
 
-function createTheme(
-  label,
-  description,
-  colorScheme,
-  palette
-) {
+function createTheme(label, description, colorScheme, palette) {
   return {
     label,
     description,

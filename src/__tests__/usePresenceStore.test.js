@@ -1,4 +1,4 @@
-// src/store/__tests__/usePresenceStore.test.js
+﻿// src/store/__tests__/usePresenceStore.test.js
 
 /** @jest-environment node */
 
@@ -60,7 +60,7 @@ describe("Initial state", () => {
     });
 
     test("starts with empty presence sets", () => {
-        expect(store().onlineUsers).toEqual([]);
+        expect(store().onlineUserSet).toEqual(new Set([]));
         expect(store().onlineUserSet.size).toBe(0);
         expect(store().rawOnlineUserSet.size).toBe(0);
         expect(store().restrictedUserSet.size).toBe(0);
@@ -122,7 +122,7 @@ describe("Initialization", () => {
 
         await initialization;
 
-        expect(store().onlineUsers).toEqual([USER_C]);
+        expect(store().onlineUserSet).toEqual(new Set([USER_C]));
     });
 });
 
@@ -138,11 +138,11 @@ describe("Presence filtering", () => {
             USER_D,
         ]);
 
-        expect(store().onlineUsers).toEqual([
+        expect(store().onlineUserSet).toEqual(new Set([
             USER_B,
             USER_C,
             USER_D,
-        ]);
+        ]));
     });
 
     test("filters restricted users", async () => {
@@ -157,7 +157,7 @@ describe("Presence filtering", () => {
             USER_C,
         ]);
 
-        expect(store().onlineUsers).toEqual([USER_C]);
+        expect(store().onlineUserSet).toEqual(new Set([USER_C]));
         expect(store().onlineUserSet.has(USER_B)).toBe(false);
     });
 
@@ -191,7 +191,7 @@ describe("Presence filtering", () => {
             USER_D,
         ]);
 
-        expect(store().onlineUsers).toEqual([USER_D]);
+        expect(store().onlineUserSet).toEqual(new Set([USER_D]));
     });
 
     test("removes duplicate online user IDs", async () => {
@@ -203,10 +203,10 @@ describe("Presence filtering", () => {
             USER_C,
         ]);
 
-        expect(store().onlineUsers).toEqual([
+        expect(store().onlineUserSet).toEqual(new Set([
             USER_B,
             USER_C,
-        ]);
+        ]));
     });
 
     test("ignores invalid online user IDs", async () => {
@@ -220,7 +220,7 @@ describe("Presence filtering", () => {
             123,
         ]);
 
-        expect(store().onlineUsers).toEqual([USER_B]);
+        expect(store().onlineUserSet).toEqual(new Set([USER_B]));
     });
 
     test("handles empty presence updates", async () => {
@@ -229,7 +229,7 @@ describe("Presence filtering", () => {
         store().setOnlineUsers([USER_B]);
         store().setOnlineUsers([]);
 
-        expect(store().onlineUsers).toEqual([]);
+        expect(store().onlineUserSet).toEqual(new Set([]));
         expect(store().onlineUserSet.size).toBe(0);
     });
 
@@ -258,7 +258,7 @@ describe("Local blocking", () => {
 
         store().restrictUser(USER_B);
 
-        expect(store().onlineUsers).toEqual([USER_C]);
+        expect(store().onlineUserSet).toEqual(new Set([USER_C]));
         expect(store().restrictedUserSet.has(USER_B)).toBe(true);
     });
 
@@ -301,7 +301,7 @@ describe("Unblocking", () => {
         await store().initialize(USER_A);
 
         store().setOnlineUsers([USER_B]);
-        expect(store().onlineUsers).toEqual([]);
+        expect(store().onlineUserSet).toEqual(new Set([]));
 
         mockGetRestrictedUserIds.mockResolvedValue([]);
 
@@ -311,7 +311,7 @@ describe("Unblocking", () => {
             force: true,
         });
 
-        expect(store().onlineUsers).toEqual([USER_B]);
+        expect(store().onlineUserSet).toEqual(new Set([USER_B]));
     });
 
     test("preserves restrictions when a mutual block remains", async () => {
@@ -325,7 +325,7 @@ describe("Unblocking", () => {
         await store().fetchRestrictedUsers({ force: true });
 
         expect(store().restrictedUserSet.has(USER_B)).toBe(true);
-        expect(store().onlineUsers).toEqual([]);
+        expect(store().onlineUserSet).toEqual(new Set([]));
     });
 
     test("does not immediately expose presence on invalidation", async () => {
@@ -337,7 +337,7 @@ describe("Unblocking", () => {
 
         store().setOnlineUsers([USER_B]);
         store().invalidateRestrictions();
-        expect(store().onlineUsers).toEqual([]);
+        expect(store().onlineUserSet).toEqual(new Set([]));
     });
 });
 
@@ -447,7 +447,7 @@ describe("Error handling", () => {
             force: true,
         });
 
-        expect(store().onlineUsers).toEqual([]);
+        expect(store().onlineUserSet).toEqual(new Set([]));
         expect(store().onlineUserSet.size).toBe(0);
     });
 
@@ -474,7 +474,7 @@ describe("Error handling", () => {
 
         expect(result).toBe(true);
         expect(store().restrictionsError).toBeNull();
-        expect(store().onlineUsers).toEqual([USER_B]);
+        expect(store().onlineUserSet).toEqual(new Set([USER_B]));
     });
 });
 
@@ -487,12 +487,10 @@ describe("Reference stability", () => {
         store().setOnlineUsers([USER_B, USER_C]);
 
         const previousSet = store().onlineUserSet;
-        const previousArray = store().onlineUsers;
 
         store().setOnlineUsers([USER_B, USER_C]);
 
         expect(store().onlineUserSet).toBe(previousSet);
-        expect(store().onlineUsers).toBe(previousArray);
     });
 
     test("preserves visible references when only blocked presence changes", async () => {
@@ -505,12 +503,10 @@ describe("Reference stability", () => {
         store().setOnlineUsers([USER_C]);
 
         const previousSet = store().onlineUserSet;
-        const previousArray = store().onlineUsers;
 
         store().setOnlineUsers([USER_B, USER_C]);
 
         expect(store().onlineUserSet).toBe(previousSet);
-        expect(store().onlineUsers).toBe(previousArray);
     });
 
     test("preserves references when presence order changes", async () => {
@@ -593,7 +589,7 @@ describe("Asynchronous race conditions", () => {
         await refresh;
 
         expect(store().restrictedUserSet.has(USER_B)).toBe(true);
-        expect(store().onlineUsers).toEqual([]);
+        expect(store().onlineUserSet).toEqual(new Set([]));
     });
 });
 
@@ -611,7 +607,7 @@ describe("Cleanup", () => {
 
         store().clearOnlineUsers();
 
-        expect(store().onlineUsers).toEqual([]);
+        expect(store().onlineUserSet).toEqual(new Set([]));
         expect(store().rawOnlineUserSet.size).toBe(0);
         expect(store().restrictedUserSet.has(USER_B)).toBe(true);
         expect(store().restrictionsLoaded).toBe(true);
@@ -629,7 +625,7 @@ describe("Cleanup", () => {
         store().reset();
 
         expect(store().userId).toBeNull();
-        expect(store().onlineUsers).toEqual([]);
+        expect(store().onlineUserSet).toEqual(new Set([]));
         expect(store().onlineUserSet.size).toBe(0);
         expect(store().rawOnlineUserSet.size).toBe(0);
         expect(store().restrictedUserSet.size).toBe(0);

@@ -241,21 +241,6 @@ export function subscribeToAllMessages(
   );
 }
 
-export function subscribeToMessages(
-  conversationId,
-  onMessage
-) {
-  return subscribeToChanges(
-    `chat:${conversationId}`,
-    {
-      event: "INSERT",
-      table: "messages",
-      filter: `conversation_id=eq.${conversationId}`,
-    },
-    onMessage
-  );
-}
-
 export function subscribeToReadReceipts(
   conversationId,
   onReceipt,

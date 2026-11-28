@@ -2,162 +2,206 @@
 
 "use client";
 
-import {
-  memo,
-  useCallback,
-  useMemo,
-} from "react";
+import { memo, useCallback, useMemo } from "react";
+import { Check, CheckCheck, Reply } from "lucide-react";
 
-import {
-  Check,
-  CheckCheck,
-  Reply,
-} from "lucide-react";
+import { getPreviewUrlFromParts } from "@/utils/previewUrlPolicy";
+import { splitMessageText } from "@/utils/urlUtils";
 
-import { isPreviewAllowed } from "@/utils/previewUrlPolicy";
-import { extractUrls } from "@/utils/urlUtils";
+import { QuotedMessage } from "./MessageReply";
 
-import QuotedMessage from "./extras/QuotedMessage";
-import ReactionPicker from "./extras/ReactionPicker";
-import MessageReactions from "./MessageReactions";
+import MessageReactions, {
+  ReactionPicker,
+  groupReactions,
+} from "./MessageReactions";
 
-import ImageAttachment from "./extras/ImageAttachment";
-import FileAttachment from "./extras/FileAttachment";
+import MessageAttachment from "./extras/MessageAttachment";
 import GifMessage from "./extras/GifMessage";
-
-import MessageText from "./extras/MessageText";
 import LinkPreview from "./extras/LinkPreview";
 
-/* -------------------- CONSTANTS -------------------- */
-
 const EMPTY_REACTIONS = Object.freeze([]);
+const EMPTY_PARTS = Object.freeze([]);
 
-const timeFormatter = new Intl.DateTimeFormat("en-AU", {
+const TIME_FORMATTER = new Intl.DateTimeFormat("en-AU", {
   hour: "numeric",
   minute: "2-digit",
 });
 
-/* -------------------- COMPONENT -------------------- */
+/* -------------------- MESSAGE TEXT -------------------- */
+
+const MessageText = memo(function MessageText({
+  parts,
+  isOwn,
+  hasMedia,
+}) {
+  return (
+    <p
+      className={`whitespace-pre-wrap wrap-break-word [overflow-wrap:anywhere] text-sm ${
+        hasMedia ? "mt-2" : ""
+      }`}
+    >
+      {parts.map((part, index) =>
+        part.type === "link" ? (
+          <a
+            key={index}
+            href={part.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`underline underline-offset-2 transition-colors ${
+              isOwn
+                ? "text-white hover:text-blue-200"
+                : "text-blue-400 hover:text-blue-300"
+            }`}
+          >
+            {part.value}
+          </a>
+        ) : (
+          part.value
+        )
+      )}
+    </p>
+  );
+});
+
+/* -------------------- TIMESTAMP -------------------- */
+
+const MessageStatus = memo(function MessageStatus({
+  createdAt,
+  isOwn,
+  isRead,
+  showReadStatus,
+}) {
+  const time = useMemo(() => {
+    const date = new Date(createdAt);
+
+    return Number.isNaN(date.getTime())
+      ? ""
+      : TIME_FORMATTER.format(date);
+  }, [createdAt]);
+
+  return (
+    <div
+      className={`mt-1 flex items-center justify-end gap-1 text-[11px] ${
+        isOwn ? "text-blue-200" : "text-gray-400"
+      }`}
+    >
+      <time dateTime={createdAt}>{time}</time>
+
+      {isOwn && showReadStatus && (
+        isRead ? (
+          <CheckCheck
+            size={15}
+            className="text-cyan-300"
+            aria-label="Read"
+          />
+        ) : (
+          <Check size={15} aria-label="Sent" />
+        )
+      )}
+    </div>
+  );
+});
+
+/* -------------------- MESSAGE BUBBLE -------------------- */
 
 function MessageBubble({
   message,
   isOwn,
   isRead,
   showReadStatus = true,
-
-  // Message replies
   quotedMessage,
   quotedSenderName,
   onReply,
   onJumpToMessage,
-
-  // Emoji reactions
   reactions = EMPTY_REACTIONS,
   userId,
   onToggleReaction,
 }) {
-  const time = timeFormatter.format(
-    new Date(message.created_at)
-  );
-
-  /* -------------------- PERMISSIONS -------------------- */
+  const {
+    id,
+    content,
+    created_at: createdAt,
+    reply_to_id: replyToId,
+    gif_id: gifId,
+    attachment_type: attachmentType,
+    attachment_path: attachmentPath,
+    attachment_name: attachmentName,
+    attachment_size: attachmentSize,
+  } = message;
 
   const canReply = typeof onReply === "function";
-
-  const canReact =
-    typeof onToggleReaction === "function";
-
+  const canReact = typeof onToggleReaction === "function";
   const hasActions = canReply || canReact;
 
-  /* -------------------- MESSAGE CONTENT -------------------- */
+  const hasAttachment =
+    Boolean(attachmentPath) &&
+    (attachmentType === "image" ||
+      attachmentType === "file");
 
-  const hasGif = Boolean(message.gif_id);
+  const hasMedia = Boolean(gifId) || hasAttachment;
 
-  const hasImage =
-    message.attachment_type === "image" &&
-    Boolean(message.attachment_path);
+  /* Parse message content once. */
 
-  const hasFile =
-    message.attachment_type === "file" &&
-    Boolean(message.attachment_path);
-
-  const hasMedia = hasGif || hasImage || hasFile;
-
-  const hasContent = Boolean(message.content?.trim());
-
-  /* -------------------- LINK PREVIEW -------------------- */
-
-  const previewUrl = useMemo(() => {
-    const [url] = extractUrls(
-      message.content || "",
-      1
-    );
-
-    if (!url || !isPreviewAllowed(url)) {
-      return null;
+  const { parts, previewUrl } = useMemo(() => {
+    if (!content?.trim()) {
+      return {
+        parts: EMPTY_PARTS,
+        previewUrl: null,
+      };
     }
 
-    return url;
-  }, [message.content]);
+    const parts = splitMessageText(content);
 
-  /* -------------------- REACTIONS -------------------- */
+    return {
+      parts,
+      previewUrl: getPreviewUrlFromParts(parts),
+    };
+  }, [content]);
 
-  const selectedEmojis = useMemo(() => {
-    if (!canReact || !reactions.length) {
-      return EMPTY_REACTIONS;
-    }
-
-    return reactions
-      .filter(
-        (reaction) => reaction.user_id === userId
-      )
-      .map((reaction) => reaction.emoji);
-
-  }, [reactions, userId, canReact]);
-
-  const handleReaction = useCallback(
-    (emoji) => {
-      onToggleReaction?.(message.id, emoji);
-    },
-    [message.id, onToggleReaction]
+  const reactionGroups = useMemo(
+    () => groupReactions(reactions, userId),
+    [reactions, userId]
   );
 
-  /* -------------------- REPLIES -------------------- */
+  const handleReaction = useCallback(
+    (emoji) => onToggleReaction?.(id, emoji),
+    [id, onToggleReaction]
+  );
 
-  const handleReply = useCallback(() => {
-    onReply?.(message);
-  }, [message, onReply]);
+  const handleReply = useCallback(
+    () => onReply?.(message),
+    [message, onReply]
+  );
 
-  const handleJumpToMessage = useCallback(() => {
-    if (message.reply_to_id) {
-      onJumpToMessage?.(message.reply_to_id);
+  const handleJump = useCallback(() => {
+    if (replyToId) {
+      onJumpToMessage?.(replyToId);
     }
-  }, [message.reply_to_id, onJumpToMessage]);
+  }, [replyToId, onJumpToMessage]);
 
-  /* -------------------- RENDER -------------------- */
+  const widthClass =
+    canReply && canReact
+      ? "max-w-[calc(100%-80px)]"
+      : hasActions
+        ? "max-w-[calc(100%-44px)]"
+        : "max-w-full";
 
   return (
     <div
-      className={[
-        "group flex min-w-0 items-center gap-1 sm:gap-2",
-        isOwn ? "justify-end" : "justify-start",
-      ].join(" ")}
+      className={`group flex min-w-0 items-center gap-1 sm:gap-2 ${
+        isOwn ? "justify-end" : "justify-start"
+      }`}
     >
-      {/* Message actions */}
-
       {hasActions && (
         <div
-          className={[
-            "flex shrink-0 items-center transition-opacity",
-            "md:opacity-0 md:group-hover:opacity-100",
-            "md:group-focus-within:opacity-100",
-            isOwn ? "order-first" : "order-last",
-          ].join(" ")}
+          className={`flex shrink-0 items-center transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 ${
+            isOwn ? "order-first" : "order-last"
+          }`}
         >
           {canReact && (
             <ReactionPicker
               isOwn={isOwn}
-              selectedEmojis={selectedEmojis}
+              groups={reactionGroups}
               onSelect={handleReaction}
             />
           )}
@@ -176,138 +220,81 @@ function MessageBubble({
         </div>
       )}
 
-      {/* Message and reactions */}
-
       <div
-        className={[
-          "min-w-0",
-
-          canReply && canReact
-            ? "max-w-[calc(100%-80px)]"
-            : hasActions
-              ? "max-w-[calc(100%-44px)]"
-              : "max-w-full",
-
-          "sm:max-w-[75%]",
-
-          previewUrl ? "w-96" : "",
-        ].join(" ")}
+        className={`min-w-0 ${widthClass} sm:max-w-[75%] ${
+          previewUrl ? "w-96" : ""
+        }`}
       >
         <div
-          className={[
-            "min-w-0 rounded-2xl px-4 py-2.5",
-
+          className={`min-w-0 rounded-2xl px-4 py-2.5 ${
             isOwn
               ? "rounded-br-sm bg-blue-600 text-white"
-              : "rounded-bl-sm bg-gray-800 text-gray-100",
-          ].join(" ")}
+              : "rounded-bl-sm bg-gray-800 text-gray-100"
+          }`}
         >
-          {/* Quoted reply */}
-
-          {message.reply_to_id && (
+          {replyToId && (
             <QuotedMessage
               message={quotedMessage}
               senderName={quotedSenderName}
               isOwn={isOwn}
               onClick={
                 quotedMessage && onJumpToMessage
-                  ? handleJumpToMessage
+                  ? handleJump
                   : undefined
               }
             />
           )}
 
-          {/* GIF attachment */}
-
-          {hasGif && (
+          {gifId && (
             <GifMessage
-              key={message.gif_id}
-              gifId={message.gif_id}
+              key={gifId}
+              gifId={gifId}
             />
           )}
 
-          {/* Image attachment */}
-
-          {hasImage && (
-            <ImageAttachment
-              path={message.attachment_path}
-              name={message.attachment_name}
+          {hasAttachment && (
+            <MessageAttachment
+              type={attachmentType}
+              path={attachmentPath}
+              name={attachmentName}
+              size={attachmentSize}
               userId={userId}
             />
           )}
 
-          {/* File attachment */}
-
-          {hasFile && (
-            <FileAttachment
-              path={message.attachment_path}
-              name={message.attachment_name}
-              size={message.attachment_size}
-            />
-          )}
-
-          {/* Message text or media caption */}
-
-          {hasContent && (
+          {parts.length > 0 && (
             <MessageText
-              content={message.content}
+              parts={parts}
               isOwn={isOwn}
-              className={hasMedia ? "mt-2" : ""}
+              hasMedia={hasMedia}
             />
           )}
-
-          {/* Automatic link preview */}
 
           {previewUrl && userId && (
             <LinkPreview
-              key={`${userId}:${message.id}:${previewUrl}`}
-              messageId={message.id}
+              messageId={id}
               userId={userId}
               url={previewUrl}
             />
           )}
 
-          {/* Timestamp and read receipts */}
-
-          <div
-            className={[
-              "mt-1 flex items-center justify-end gap-1",
-              "text-[11px]",
-
-              isOwn
-                ? "text-blue-200"
-                : "text-gray-400",
-            ].join(" ")}
-          >
-            <time dateTime={message.created_at}>
-              {time}
-            </time>
-
-            {isOwn && showReadStatus && (
-              isRead ? (
-                <CheckCheck
-                  size={15}
-                  className="text-cyan-300"
-                  aria-label="Read"
-                />
-              ) : (
-                <Check
-                  size={15}
-                  aria-label="Sent"
-                />
-              )
-            )}
-          </div>
+          <MessageStatus
+            createdAt={createdAt}
+            isOwn={isOwn}
+            isRead={isRead}
+            showReadStatus={showReadStatus}
+          />
         </div>
 
-        {/* Existing emoji reactions */}
-
-        <MessageReactions
-          reactions={reactions}
-          userId={userId}
-          isOwn={isOwn}
-          onToggle={handleReaction}
-        />
+        {reactionGroups.length > 0 && (
+          <MessageReactions
+            groups={reactionGroups}
+            isOwn={isOwn}
+            onToggle={
+              canReact ? handleReaction : undefined
+            }
+          />
+        )}
       </div>
     </div>
   );
