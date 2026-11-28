@@ -1,42 +1,32 @@
 // src/store/usePresenceStore.js
 
 import { create } from "zustand";
+import { shallow } from "zustand/shallow";
+
 import { getRestrictedUserIds } from "@/lib/blocks";
 
-/* -------------------- CONSTANTS -------------------- */
-
 const CACHE_TTL = 60_000;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const createInitialState = () => ({
+  userId: null,
 
-/* -------------------- REQUEST STATE -------------------- */
+  rawOnlineUserSet: new Set(),
+  restrictedUserSet: new Set(),
+
+  onlineUsers: [],
+  onlineUserSet: new Set(),
+
+  restrictionsLoaded: false,
+  restrictionsLoading: false,
+  restrictionsError: null,
+
+  lastFetchedAt: 0,
+});
 
 let generation = 0;
 let restrictionVersion = 0;
 let restrictionRequest = null;
-
-/* -------------------- INITIAL STATE -------------------- */
-
-function createInitialState() {
-  return {
-    userId: null,
-
-    rawOnlineUserSet: new Set(),
-    restrictedUserSet: new Set(),
-
-    onlineUsers: [],
-    onlineUserSet: new Set(),
-
-    restrictionsLoaded: false,
-    restrictionsLoading: false,
-    restrictionsError: null,
-
-    lastFetchedAt: 0,
-  };
-}
-
-/* -------------------- HELPERS -------------------- */
 
 function isValidUserId(userId) {
   return (
@@ -46,134 +36,77 @@ function isValidUserId(userId) {
 }
 
 function createUserSet(users) {
-  if (!Array.isArray(users)) {
-    return new Set();
-  }
-
-  return new Set(users.filter(isValidUserId));
-}
-
-function setsEqual(first, second) {
-  if (first === second) return true;
-
-  if (first.size !== second.size) {
-    return false;
-  }
-
-  for (const value of first) {
-    if (!second.has(value)) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function filterOnlineUsers(
-  rawUsers,
-  restrictedUsers,
-  restrictionsLoaded
-) {
-  const visibleUsers = new Set();
-
-  // Do not expose presence before restrictions load.
-  if (!restrictionsLoaded) {
-    return visibleUsers;
-  }
-
-  for (const userId of rawUsers) {
-    if (!restrictedUsers.has(userId)) {
-      visibleUsers.add(userId);
-    }
-  }
-
-  return visibleUsers;
-}
-
-function getVisiblePresence(
-  state,
-  rawUsers = state.rawOnlineUserSet,
-  restrictedUsers = state.restrictedUserSet,
-  restrictionsLoaded = state.restrictionsLoaded
-) {
-  const visibleUsers = filterOnlineUsers(
-    rawUsers,
-    restrictedUsers,
-    restrictionsLoaded
+  return new Set(
+    Array.isArray(users)
+      ? users.filter(isValidUserId)
+      : []
   );
-
-  // Preserve references to avoid unnecessary re-renders.
-  if (setsEqual(state.onlineUserSet, visibleUsers)) {
-    return {};
-  }
-
-  return {
-    onlineUserSet: visibleUsers,
-    onlineUsers: [...visibleUsers],
-  };
 }
 
-/* -------------------- STORE -------------------- */
+function invalidateRequest() {
+  restrictionVersion++;
+  restrictionRequest = null;
+}
 
-const usePresenceStore = create((set, get) => ({
-  ...createInitialState(),
+const usePresenceStore = create((set, get) => {
+  /*
+   * Apply presence changes and recalculate visible users
+   * in one atomic Zustand update.
+   */
+  function updatePresence(changes) {
+    set((state) => {
+      const next = { ...changes };
 
-  /* -------------------- INITIALIZATION -------------------- */
+      const rawUsers =
+        changes.rawOnlineUserSet ?? state.rawOnlineUserSet;
 
-  initialize: (userId) => {
-    if (!isValidUserId(userId)) {
-      return Promise.resolve(false);
-    }
+      const restrictedUsers =
+        changes.restrictedUserSet ?? state.restrictedUserSet;
 
-    if (get().userId !== userId) {
-      get().reset();
+      const loaded =
+        changes.restrictionsLoaded ?? state.restrictionsLoaded;
 
-      set({
-        userId,
-      });
-    }
+      const visibleUsers = new Set();
 
-    return get().fetchRestrictedUsers();
-  },
+      if (loaded) {
+        for (const userId of rawUsers) {
+          if (!restrictedUsers.has(userId)) {
+            visibleUsers.add(userId);
+          }
+        }
+      }
 
-  /* -------------------- PRESENCE UPDATES -------------------- */
+      // Preserve existing Set references where possible.
+      if (shallow(rawUsers, state.rawOnlineUserSet)) {
+        delete next.rawOnlineUserSet;
+      }
 
-  setOnlineUsers: (users) => {
-    const state = get();
+      if (shallow(restrictedUsers, state.restrictedUserSet)) {
+        delete next.restrictedUserSet;
+      }
 
-    if (!state.userId) return;
+      // Avoid re-rendering presence consumers if the
+      // visible online users have not changed.
+      if (!shallow(visibleUsers, state.onlineUserSet)) {
+        next.onlineUserSet = visibleUsers;
+        next.onlineUsers = [...visibleUsers];
+      }
 
-    const rawOnlineUserSet = createUserSet(users);
+      const changed = Object.entries(next).some(
+        ([key, value]) => !Object.is(state[key], value)
+      );
 
-    if (
-      setsEqual(
-        state.rawOnlineUserSet,
-        rawOnlineUserSet
-      )
-    ) {
-      return;
-    }
-
-    set({
-      rawOnlineUserSet,
-
-      ...getVisiblePresence(
-        state,
-        rawOnlineUserSet
-      ),
+      return changed ? next : state;
     });
-  },
+  }
 
-  /* -------------------- RESTRICTION FETCHING -------------------- */
-
-  fetchRestrictedUsers: ({ force = false } = {}) => {
+  function fetchRestrictedUsers({ force = false } = {}) {
     const state = get();
 
     if (!state.userId) {
       return Promise.resolve(false);
     }
 
-    // Deduplicate concurrent requests.
     if (restrictionRequest) {
       return restrictionRequest;
     }
@@ -191,100 +124,60 @@ const usePresenceStore = create((set, get) => ({
     const currentVersion = restrictionVersion;
     const currentUserId = state.userId;
 
-    function isCurrentRequest() {
-      return (
-        generation === currentGeneration &&
-        restrictionVersion === currentVersion &&
-        get().userId === currentUserId
-      );
-    }
+    const isCurrent = () =>
+      generation === currentGeneration &&
+      restrictionVersion === currentVersion &&
+      get().userId === currentUserId;
 
-    const request = Promise.resolve().then(async () => {
-      try {
-        if (!isCurrentRequest()) {
-          return false;
-        }
+    const request = Promise.resolve()
+      .then(async () => {
+        if (!isCurrent()) return false;
 
         const users = await getRestrictedUserIds();
 
-        // Ignore outdated responses.
-        if (!isCurrentRequest()) {
-          return false;
-        }
+        if (!isCurrent()) return false;
 
-        if (!Array.isArray(users)) {
+        if (
+          !Array.isArray(users) ||
+          !users.every(isValidUserId)
+        ) {
           throw new Error(
             "Invalid restricted users response"
           );
         }
 
-        const currentState = get();
-
-        const nextRestrictedUsers =
-          createUserSet(users);
-
-        const restrictedUserSet = setsEqual(
-          currentState.restrictedUserSet,
-          nextRestrictedUsers
-        )
-          ? currentState.restrictedUserSet
-          : nextRestrictedUsers;
-
-        set({
-          restrictedUserSet,
-
+        updatePresence({
+          restrictedUserSet: new Set(users),
           restrictionsLoaded: true,
           restrictionsError: null,
-
           lastFetchedAt: Date.now(),
-
-          ...getVisiblePresence(
-            currentState,
-            currentState.rawOnlineUserSet,
-            restrictedUserSet,
-            true
-          ),
         });
 
         return true;
-      } catch (error) {
-        if (!isCurrentRequest()) {
-          return false;
-        }
-
-        const currentState = get();
+      })
+      .catch((error) => {
+        if (!isCurrent()) return false;
 
         // Fail closed if restrictions cannot be verified.
-        set({
+        updatePresence({
           restrictionsLoaded: false,
-
           restrictionsError:
             error?.message ||
             "Failed to retrieve presence restrictions",
-
           lastFetchedAt: 0,
-
-          ...getVisiblePresence(
-            currentState,
-            currentState.rawOnlineUserSet,
-            currentState.restrictedUserSet,
-            false
-          ),
         });
 
         return false;
-      } finally {
+      })
+      .finally(() => {
         if (restrictionRequest === request) {
           restrictionRequest = null;
         }
 
-        if (isCurrentRequest()) {
-          set({
-            restrictionsLoading: false,
-          });
+        if (isCurrent()) {
+          set({ restrictionsLoading: false });
         }
-      }
-    });
+      });
 
     restrictionRequest = request;
 
@@ -294,23 +187,17 @@ const usePresenceStore = create((set, get) => ({
     });
 
     return request;
-  },
+  }
 
-  /* -------------------- LOCAL BLOCKING -------------------- */
-
-  restrictUser: (userId) => {
+  function restrictUser(userId) {
     const state = get();
 
-    if (
-      !state.userId ||
-      !isValidUserId(userId)
-    ) {
+    if (!state.userId || !isValidUserId(userId)) {
       return;
     }
 
-    // Prevent older responses from undoing this block.
-    restrictionVersion += 1;
-    restrictionRequest = null;
+    // Prevent an older response from undoing a new block.
+    invalidateRequest();
 
     const restrictedUserSet = new Set(
       state.restrictedUserSet
@@ -318,42 +205,69 @@ const usePresenceStore = create((set, get) => ({
 
     restrictedUserSet.add(userId);
 
-    set({
+    updatePresence({
       restrictedUserSet,
-
       restrictionsLoading: false,
       lastFetchedAt: 0,
-
-      ...getVisiblePresence(
-        state,
-        state.rawOnlineUserSet,
-        restrictedUserSet
-      ),
     });
 
-    // Recover if blocking interrupted initial loading.
+    // Recover if blocking interrupted initial loading
+    // or a restriction revalidation.
     if (!state.restrictionsLoaded) {
-      void get().fetchRestrictedUsers({
-        force: true,
+      void fetchRestrictedUsers({ force: true });
+    }
+  }
+
+  function invalidateRestrictions() {
+    invalidateRequest();
+
+    updatePresence({
+      restrictionsLoaded: false,
+      restrictionsLoading: false,
+      lastFetchedAt: 0,
+    });
+  }
+
+  function reset() {
+    generation++;
+    invalidateRequest();
+
+    set(createInitialState());
+  }
+
+  function initialize(userId) {
+    if (!isValidUserId(userId)) {
+      return Promise.resolve(false);
+    }
+
+    if (get().userId !== userId) {
+      generation++;
+      invalidateRequest();
+
+      set({
+        ...createInitialState(),
+        userId,
       });
     }
-  },
 
-  /* -------------------- CACHE INVALIDATION -------------------- */
+    return fetchRestrictedUsers();
+  }
 
-  invalidateRestrictions: () => {
-    restrictionVersion += 1;
-    restrictionRequest = null;
+  function setOnlineUsers(users) {
+    const state = get();
 
-    set({
-      lastFetchedAt: 0,
-      restrictionsLoading: false,
-    });
-  },
+    if (!state.userId) return;
 
-  /* -------------------- DISCONNECTION -------------------- */
+    const rawOnlineUserSet = createUserSet(users);
 
-  clearOnlineUsers: () => {
+    if (shallow(rawOnlineUserSet, state.rawOnlineUserSet)) {
+      return;
+    }
+
+    updatePresence({ rawOnlineUserSet });
+  }
+
+  function clearOnlineUsers() {
     const state = get();
 
     if (
@@ -363,26 +277,22 @@ const usePresenceStore = create((set, get) => ({
       return;
     }
 
-    set({
+    updatePresence({
       rawOnlineUserSet: new Set(),
-
-      ...getVisiblePresence(
-        state,
-        new Set()
-      ),
     });
-  },
+  }
 
-  /* -------------------- ACCOUNT RESET -------------------- */
+  return {
+    ...createInitialState(),
 
-  reset: () => {
-    generation += 1;
-    restrictionVersion += 1;
-
-    restrictionRequest = null;
-
-    set(createInitialState());
-  },
-}));
+    initialize,
+    setOnlineUsers,
+    fetchRestrictedUsers,
+    restrictUser,
+    invalidateRestrictions,
+    clearOnlineUsers,
+    reset,
+  };
+});
 
 export default usePresenceStore;
